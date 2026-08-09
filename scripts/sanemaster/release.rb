@@ -2798,6 +2798,72 @@ module SaneMasterModules
       'unknown'
     end
 
+    def appstore_source_identity_report(root: Dir.pwd)
+      identity = {
+        branch: nil,
+        commit: nil,
+        clean: false,
+        remote: 'origin',
+        remoteRef: nil,
+        remoteCommit: nil,
+        pushed: false
+      }
+
+      branch_out, branch_status = Open3.capture2e('git', '-C', root, 'branch', '--show-current')
+      branch = branch_out.to_s.strip
+      unless branch_status.success? && !branch.empty?
+        return { identity: identity, issues: ['App Store submission requires a named pushed branch; detached HEAD is not allowed'] }
+      end
+
+      commit_out, commit_status = Open3.capture2e('git', '-C', root, 'rev-parse', 'HEAD')
+      commit = commit_out.to_s.strip
+      unless commit_status.success? && commit.match?(/\A[0-9a-f]{40,64}\z/i)
+        return { identity: identity, issues: ['Could not resolve the App Store source commit'] }
+      end
+
+      status_out, status_status = Open3.capture2e(
+        'git', '-C', root, 'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'
+      )
+      unless status_status.success?
+        return { identity: identity, issues: ['Could not verify the App Store source worktree state'] }
+      end
+
+      remote_ref = "refs/heads/#{branch}"
+      identity.merge!(branch: branch, commit: commit, clean: status_out.to_s.empty?, remoteRef: remote_ref)
+      unless identity[:clean]
+        return { identity: identity, issues: ['App Store submission requires a clean worktree whose exact source is pushed'] }
+      end
+
+      remote_out, remote_status = Open3.capture2e(
+        'git', '-C', root, 'ls-remote', '--exit-code', 'origin', remote_ref
+      )
+      unless remote_status.success?
+        return {
+          identity: identity,
+          issues: ["Could not read live origin #{remote_ref}; App Store source is remote-unavailable"]
+        }
+      end
+
+      remote_line = remote_out.to_s.lines.map(&:strip).find { |line| line.split(/\s+/, 2)[1] == remote_ref }
+      remote_commit = remote_line.to_s.split(/\s+/, 2).first.to_s
+      unless remote_commit.match?(/\A[0-9a-f]{40,64}\z/i)
+        return { identity: identity, issues: ["Could not prove one live origin commit for #{remote_ref}"] }
+      end
+
+      identity[:remoteCommit] = remote_commit
+      identity[:pushed] = commit == remote_commit
+      unless identity[:pushed]
+        return {
+          identity: identity,
+          issues: ["App Store source is not exactly pushed: HEAD #{commit[0, 12]} != live origin #{remote_commit[0, 12]}"]
+        }
+      end
+
+      { identity: identity, issues: [] }
+    rescue StandardError => e
+      { identity: identity, issues: ["Could not verify live pushed App Store source: #{e.message}"] }
+    end
+
     def appstore_bundle_layout(app_dir, platform:)
       if platform.to_s == 'ios'
         {
@@ -3048,7 +3114,7 @@ module SaneMasterModules
       nil
     end
 
-    def write_appstore_preflight_status_snapshot(path:, status:, issues:, warnings:, app_name:, app_id:, version:, build:, platforms:, submission_target: nil)
+    def write_appstore_preflight_status_snapshot(path:, status:, issues:, warnings:, app_name:, app_id:, version:, build:, platforms:, source_identity:, submission_target: nil)
       FileUtils.mkdir_p(File.dirname(path))
       payload = {
         type: 'appstore_preflight_status',
@@ -3059,6 +3125,7 @@ module SaneMasterModules
         build: build.to_s,
         platforms: Array(platforms).map(&:to_s),
         submissionTarget: submission_target&.reject { |key, _value| key.to_s == 'path' },
+        sourceIdentity: source_identity,
         worktreeFingerprint: appstore_worktree_fingerprint(root: Dir.pwd),
         status: status,
         issueCount: issues.count,
@@ -5459,6 +5526,16 @@ module SaneMasterModules
         return true
       end
 
+      print '  Pushed source identity... '
+      source_report = appstore_source_identity_report(root: Dir.pwd)
+      source_identity = source_report[:identity]
+      if source_report[:issues].empty?
+        puts "✅ #{source_identity[:branch]} @ #{source_identity[:commit][0, 12]}"
+      else
+        puts '❌ unverified'
+        source_report[:issues].each { |issue| issues << "Source identity: #{issue}" }
+      end
+
       # ═══════════════════════════════════════════
       # SECTION 1: App Store Connect Setup
       # ═══════════════════════════════════════════
@@ -6718,6 +6795,7 @@ module SaneMasterModules
         version: version_str,
         build: build_num,
         platforms: platforms,
+        source_identity: source_identity,
         submission_target: submission_target
       )
 

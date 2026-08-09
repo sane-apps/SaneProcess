@@ -4748,6 +4748,78 @@ rescue StandardError
   'unknown'
 end
 
+def appstore_live_source_identity(project_root)
+  identity = {
+    'branch' => nil,
+    'commit' => nil,
+    'clean' => false,
+    'remote' => 'origin',
+    'remoteRef' => nil,
+    'remoteCommit' => nil,
+    'pushed' => false
+  }
+
+  branch_out, branch_status = Open3.capture2e('git', '-C', project_root, 'branch', '--show-current')
+  branch = branch_out.to_s.strip
+  return [identity, 'App Store mutation requires a named pushed branch; detached HEAD is not allowed'] unless branch_status.success? && !branch.empty?
+
+  commit_out, commit_status = Open3.capture2e('git', '-C', project_root, 'rev-parse', 'HEAD')
+  commit = commit_out.to_s.strip
+  return [identity, 'App Store mutation could not resolve the current source commit'] unless commit_status.success? && commit.match?(/\A[0-9a-f]{40,64}\z/i)
+
+  status_out, status_status = Open3.capture2e(
+    'git', '-C', project_root, 'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'
+  )
+  return [identity, 'App Store mutation could not verify the current worktree state'] unless status_status.success?
+
+  remote_ref = "refs/heads/#{branch}"
+  identity.merge!('branch' => branch, 'commit' => commit, 'clean' => status_out.to_s.empty?, 'remoteRef' => remote_ref)
+  return [identity, 'App Store mutation requires a clean worktree whose exact source is pushed'] unless identity['clean']
+
+  remote_out, remote_status = Open3.capture2e(
+    'git', '-C', project_root, 'ls-remote', '--exit-code', 'origin', remote_ref
+  )
+  unless remote_status.success?
+    return [identity, "App Store mutation could not read live origin #{remote_ref}; refusing remote-unavailable source"]
+  end
+
+  remote_line = remote_out.to_s.lines.map(&:strip).find { |line| line.split(/\s+/, 2)[1] == remote_ref }
+  remote_commit = remote_line.to_s.split(/\s+/, 2).first.to_s
+  unless remote_commit.match?(/\A[0-9a-f]{40,64}\z/i)
+    return [identity, "App Store mutation could not prove one live origin commit for #{remote_ref}"]
+  end
+
+  identity['remoteCommit'] = remote_commit
+  identity['pushed'] = commit == remote_commit
+  unless identity['pushed']
+    return [
+      identity,
+      "App Store mutation requires exact pushed source; HEAD #{commit[0, 12]} does not match live origin #{remote_commit[0, 12]}"
+    ]
+  end
+
+  [identity, nil]
+rescue StandardError => e
+  [identity, "App Store mutation could not verify live pushed source: #{e.message}"]
+end
+
+def appstore_signed_source_identity_current?(receipt_identity, project_root)
+  return [false, 'appstore_preflight receipt is missing signed source identity'] unless receipt_identity.is_a?(Hash)
+  unless receipt_identity['clean'] == true && receipt_identity['pushed'] == true
+    return [false, 'appstore_preflight receipt does not authorize clean pushed source']
+  end
+
+  current, error = appstore_live_source_identity(project_root)
+  return [false, error] if error
+
+  fields = %w[branch commit clean remote remoteRef remoteCommit pushed]
+  expected = fields.to_h { |field| [field, receipt_identity[field]] }
+  actual = fields.to_h { |field| [field, current[field]] }
+  return [false, 'signed App Store source identity no longer matches the live origin branch; rerun preflight'] unless expected == actual
+
+  [true, current]
+end
+
 def appstore_package_submission_target(pkg_path, platform:)
   info = extract_app_info_from_package(pkg_path)
   return nil unless info
@@ -4859,6 +4931,9 @@ def fresh_appstore_preflight_receipt?(project_root:, app_id:, version:, platform
   age = Time.now - generated_at
   return [false, 'appstore_preflight receipt is future-dated'] if age < -APPSTORE_PREFLIGHT_CLOCK_SKEW_SECONDS
   return [false, "appstore_preflight receipt is stale (#{(age / 60).round} minutes old)"] if age > max_age_seconds
+
+  source_ok, source_detail = appstore_signed_source_identity_current?(receipt['sourceIdentity'], project_root)
+  return [false, source_detail] unless source_ok
 
   expected_fingerprint = receipt['worktreeFingerprint'].to_s
   current_fingerprint = appstore_worktree_fingerprint(project_root)

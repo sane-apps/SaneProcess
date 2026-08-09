@@ -6,6 +6,7 @@ require 'tmpdir'
 require_relative 'hooks/test/test_framework'
 require_relative 'hooks/release_receipt_signer'
 require_relative 'appstore_submit'
+require_relative 'sanemaster/release'
 
 APPSTORE_PREFLIGHT_TEST_SIGNER = ReleaseReceiptSigner.test_signer(secret: 'appstore-preflight-guardrail-test')
 APPSTORE_PREFLIGHT_ASC_TARGET = {
@@ -44,6 +45,59 @@ def write_submit_test_plist(path, bundle_id:)
         <key>CFBundleVersion</key><string>100</string>
       </dict></plist>
     PLIST
+  )
+end
+
+def run_appstore_git!(*args, chdir:)
+  output, status = Open3.capture2e('git', *args, chdir: chdir)
+  raise "git #{args.join(' ')} failed: #{output}" unless status.success?
+
+  output
+end
+
+def with_pushed_appstore_project(prefix)
+  Dir.mktmpdir(prefix) do |root|
+    project = File.join(root, 'project')
+    remote = File.join(root, 'origin.git')
+    FileUtils.mkdir_p(project)
+    run_appstore_git!('init', '-q', '--bare', remote, chdir: root)
+    run_appstore_git!('init', '-q', '-b', 'release/appstore-test', chdir: project)
+    run_appstore_git!('config', 'user.name', 'SaneProcess Test', chdir: project)
+    run_appstore_git!('config', 'user.email', 'test@saneapps.invalid', chdir: project)
+    File.write(File.join(project, '.saneprocess'), "name: Example\n")
+    File.write(File.join(project, '.gitignore'), "/outputs/\n")
+    run_appstore_git!('add', '.saneprocess', '.gitignore', chdir: project)
+    run_appstore_git!('commit', '-q', '-m', 'initial source', chdir: project)
+    run_appstore_git!('remote', 'add', 'origin', remote, chdir: project)
+    run_appstore_git!('push', '-q', '-u', 'origin', 'HEAD', chdir: project)
+    yield project, remote
+  end
+end
+
+def write_passing_appstore_preflight(project, overrides = {})
+  FileUtils.mkdir_p(File.join(project, 'outputs'))
+  source_identity, source_error = appstore_live_source_identity(project)
+  raise source_error if source_error
+
+  payload = {
+    'type' => 'appstore_preflight_status',
+    'generatedAt' => Time.now.iso8601,
+    'status' => 'passed',
+    'appId' => '123',
+    'version' => '1.0',
+    'platforms' => ['ios'],
+    'submissionTarget' => APPSTORE_PREFLIGHT_ASC_TARGET,
+    'sourceIdentity' => source_identity,
+    'worktreeFingerprint' => appstore_worktree_fingerprint(project),
+    'issueCount' => 0,
+    'warningCount' => 0,
+    'issues' => [],
+    'warnings' => []
+  }.merge(overrides)
+  APPSTORE_PREFLIGHT_TEST_SIGNER.write(
+    File.join(project, 'outputs', 'appstore_preflight_status.json'),
+    payload,
+    producer: 'saneprocess.appstore_preflight.v1'
   )
 end
 
@@ -587,28 +641,8 @@ exit(run_tests('App Store Submit Guardrail Tests') do
     end
 
     test('accepts a fresh passing receipt for the current worktree') do
-      Dir.mktmpdir('fresh-appstore-preflight-') do |dir|
-        FileUtils.mkdir_p(File.join(dir, 'outputs'))
-        File.write(File.join(dir, '.saneprocess'), "name: Example\n")
-        fingerprint = appstore_worktree_fingerprint(dir)
-        APPSTORE_PREFLIGHT_TEST_SIGNER.write(
-          File.join(dir, 'outputs', 'appstore_preflight_status.json'),
-          {
-            'type' => 'appstore_preflight_status',
-            'generatedAt' => Time.now.iso8601,
-            'status' => 'passed',
-            'appId' => '123',
-            'version' => '1.0',
-            'platforms' => ['ios'],
-            'submissionTarget' => APPSTORE_PREFLIGHT_ASC_TARGET,
-            'worktreeFingerprint' => fingerprint,
-            'issueCount' => 0,
-            'warningCount' => 0,
-            'issues' => [],
-            'warnings' => []
-          },
-          producer: 'saneprocess.appstore_preflight.v1'
-        )
+      with_pushed_appstore_project('fresh-appstore-preflight-') do |dir, _remote|
+        write_passing_appstore_preflight(dir)
 
         ok, detail = fresh_appstore_preflight_receipt?(
           project_root: dir,
@@ -624,25 +658,130 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       true
     end
 
-    test('rejects a receipt bound to different exact package bytes') do
-      Dir.mktmpdir('mismatched-appstore-build-') do |dir|
-        FileUtils.mkdir_p(File.join(dir, 'outputs'))
-        File.write(File.join(dir, '.saneprocess'), "name: Example\n")
-        APPSTORE_PREFLIGHT_TEST_SIGNER.write(
-          File.join(dir, 'outputs', 'appstore_preflight_status.json'),
-          {
-            'type' => 'appstore_preflight_status',
-            'generatedAt' => Time.now.iso8601,
-            'status' => 'passed',
-            'appId' => '123',
-            'version' => '1.0',
-            'platforms' => ['ios'],
-            'submissionTarget' => APPSTORE_PREFLIGHT_ASC_TARGET,
-            'worktreeFingerprint' => appstore_worktree_fingerprint(dir),
-            'issues' => []
-          },
-          producer: 'saneprocess.appstore_preflight.v1'
+    test('blocks a detached source even when package and worktree fingerprints still match') do
+      with_pushed_appstore_project('detached-appstore-preflight-') do |dir, _remote|
+        write_passing_appstore_preflight(dir)
+        run_appstore_git!('checkout', '-q', '--detach', chdir: dir)
+
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir, app_id: '123', version: '1.0', platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
         )
+        assert(!ok, 'expected detached source to block App Store mutation')
+        assert_includes(detail, 'detached HEAD')
+      end
+      true
+    end
+
+    test('blocks a clean local commit ahead of live origin') do
+      with_pushed_appstore_project('ahead-appstore-preflight-') do |dir, _remote|
+        write_passing_appstore_preflight(dir)
+        run_appstore_git!('commit', '-q', '--allow-empty', '-m', 'unpushed source', chdir: dir)
+
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir, app_id: '123', version: '1.0', platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
+        )
+        assert(!ok, 'expected unpushed source to block App Store mutation')
+        assert_includes(detail, 'does not match live origin')
+      end
+      true
+    end
+
+    test('blocks when live origin advances beyond a stale local tracking ref') do
+      with_pushed_appstore_project('stale-tracking-appstore-preflight-') do |dir, remote|
+        write_passing_appstore_preflight(dir)
+        publisher = File.join(File.dirname(dir), 'publisher')
+        run_appstore_git!('clone', '-q', '--branch', 'release/appstore-test', remote, publisher, chdir: File.dirname(dir))
+        run_appstore_git!('config', 'user.name', 'SaneProcess Publisher', chdir: publisher)
+        run_appstore_git!('config', 'user.email', 'publisher@saneapps.invalid', chdir: publisher)
+        File.write(File.join(publisher, 'remote-change.txt'), "new remote source\n")
+        run_appstore_git!('add', 'remote-change.txt', chdir: publisher)
+        run_appstore_git!('commit', '-q', '-m', 'advance remote', chdir: publisher)
+        run_appstore_git!('push', '-q', 'origin', 'HEAD', chdir: publisher)
+
+        local_tracking = run_appstore_git!('rev-parse', 'refs/remotes/origin/release/appstore-test', chdir: dir).strip
+        local_head = run_appstore_git!('rev-parse', 'HEAD', chdir: dir).strip
+        assert_eq(local_tracking, local_head)
+
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir, app_id: '123', version: '1.0', platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
+        )
+        assert(!ok, 'expected live remote drift to block despite stale local tracking parity')
+        assert_includes(detail, 'does not match live origin')
+      end
+      true
+    end
+
+    test('blocks when live origin is unavailable') do
+      with_pushed_appstore_project('unavailable-origin-appstore-preflight-') do |dir, remote|
+        write_passing_appstore_preflight(dir)
+        File.rename(remote, "#{remote}.offline")
+
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir, app_id: '123', version: '1.0', platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
+        )
+        assert(!ok, 'expected remote-unavailable source to block App Store mutation')
+        assert_includes(detail, 'remote-unavailable')
+      end
+      true
+    end
+
+    test('requires source identity inside the signed App Store preflight receipt') do
+      with_pushed_appstore_project('missing-source-appstore-preflight-') do |dir, _remote|
+        write_passing_appstore_preflight(dir, 'sourceIdentity' => nil)
+
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir, app_id: '123', version: '1.0', platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
+        )
+        assert(!ok, 'expected missing signed source identity to block App Store mutation')
+        assert_includes(detail, 'missing signed source identity')
+      end
+      true
+    end
+
+    test('preflight records the exact clean live-origin source identity in its signed payload') do
+      with_pushed_appstore_project('release-source-appstore-preflight-') do |dir, _remote|
+        harness_class = Class.new do
+          include SaneMasterModules::Release
+          attr_reader :written_payload
+
+          def upgrade_path_write_signed_atomic!(_path, payload, **_options)
+            @written_payload = payload
+          end
+        end
+        harness = harness_class.new
+        report = harness.send(:appstore_source_identity_report, root: dir)
+        assert_eq(report[:issues], [])
+        assert(report[:identity][:clean])
+        assert(report[:identity][:pushed])
+        assert_eq(report[:identity][:commit], report[:identity][:remoteCommit])
+
+        Dir.chdir(dir) do
+          harness.send(
+            :write_appstore_preflight_status_snapshot,
+            path: File.join(dir, 'outputs', 'appstore_preflight_status.json'),
+            status: 'passed', issues: [], warnings: [], app_name: 'Example', app_id: '123',
+            version: '1.0', build: '100', platforms: ['ios'],
+            source_identity: report[:identity], submission_target: APPSTORE_PREFLIGHT_ASC_TARGET
+          )
+        end
+        assert_eq(harness.written_payload[:sourceIdentity], report[:identity])
+      end
+      true
+    end
+
+    test('rejects a receipt bound to different exact package bytes') do
+      with_pushed_appstore_project('mismatched-appstore-build-') do |dir, _remote|
+        write_passing_appstore_preflight(dir)
 
         different_target = APPSTORE_PREFLIGHT_ASC_TARGET.merge('sha256' => 'b' * 64)
         ok, detail = fresh_appstore_preflight_receipt?(
@@ -860,24 +999,10 @@ exit(run_tests('App Store Submit Guardrail Tests') do
     end
 
     test('rejects correctly signed App Store preflight receipts four minutes in the future') do
-      Dir.mktmpdir('future-appstore-preflight-') do |dir|
-        FileUtils.mkdir_p(File.join(dir, 'outputs'))
-        File.write(File.join(dir, '.saneprocess'), "name: Example\n")
-        fingerprint = appstore_worktree_fingerprint(dir)
-        APPSTORE_PREFLIGHT_TEST_SIGNER.write(
-          File.join(dir, 'outputs', 'appstore_preflight_status.json'),
-          {
-            'type' => 'appstore_preflight_status',
-            'generatedAt' => (Time.now.utc + (4 * 60)).iso8601,
-            'status' => 'passed',
-            'appId' => '123',
-            'version' => '1.0',
-            'platforms' => ['ios'],
-            'submissionTarget' => APPSTORE_PREFLIGHT_ASC_TARGET,
-            'worktreeFingerprint' => fingerprint,
-            'issues' => []
-          },
-          producer: 'saneprocess.appstore_preflight.v1'
+      with_pushed_appstore_project('future-appstore-preflight-') do |dir, _remote|
+        write_passing_appstore_preflight(
+          dir,
+          'generatedAt' => (Time.now.utc + (4 * 60)).iso8601
         )
 
         ok, detail = fresh_appstore_preflight_receipt?(
