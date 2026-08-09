@@ -812,10 +812,10 @@ module SaneMasterModules
         next unless spec.is_a?(Hash)
 
         platform = spec['platform'].to_s
-        next unless %w[iOS watchOS].include?(platform)
+        next unless %w[ios watchos].include?(platform.downcase)
+        next unless spec['type'].to_s == 'application'
 
-        release_appstore = spec.dig('settings', 'configs', 'Release-AppStore') || {}
-        next if release_appstore.empty?
+        signing = appstore_merged_target_settings(project, spec, 'Release-AppStore')
 
         groups = Array(spec.dig('entitlements', 'properties', 'com.apple.security.application-groups')).map(&:to_s)
         entitlements_path = spec.dig('entitlements', 'path')
@@ -828,15 +828,61 @@ module SaneMasterModules
         list << {
           name: name,
           platform: platform,
-          bundle_id: release_appstore['PRODUCT_BUNDLE_IDENTIFIER'] || spec['bundleId'],
-          code_sign_style: release_appstore['CODE_SIGN_STYLE'].to_s,
-          code_sign_identity: release_appstore['CODE_SIGN_IDENTITY'].to_s,
-          provisioning_profile: release_appstore['PROVISIONING_PROFILE_SPECIFIER'].to_s,
+          bundle_id: signing['PRODUCT_BUNDLE_IDENTIFIER'] || spec['bundleId'],
+          code_sign_style: signing['CODE_SIGN_STYLE'].to_s,
+          code_sign_identity: signing['CODE_SIGN_IDENTITY'].to_s,
+          provisioning_profile: signing['PROVISIONING_PROFILE_SPECIFIER'].to_s,
           app_groups: groups.reject(&:empty?)
         }
       end
     rescue StandardError
       []
+    end
+
+    def appstore_merged_target_settings(project, target, config_name)
+      project_settings = project['settings'].is_a?(Hash) ? project['settings'] : {}
+      target_settings = target['settings'].is_a?(Hash) ? target['settings'] : {}
+      project_flat = project_settings.reject { |key, value| %w[base configs].include?(key.to_s) || value.is_a?(Hash) }
+
+      [
+        project_flat,
+        project_settings['base'],
+        project_settings.dig('configs', config_name),
+        target_settings['base'],
+        target_settings.dig('configs', config_name)
+      ].compact.select { |settings| settings.is_a?(Hash) }.reduce({}) { |merged, settings| merged.merge(settings) }
+    end
+
+    def appstore_mobile_signing_target_report(target, profile_cache:)
+      issues = []
+      warnings = []
+      if target[:code_sign_style].to_s.strip.casecmp?('Automatic')
+        warnings << "#{target[:name]} uses automatic signing — verify the archived target resolves to Apple Distribution on the Mini"
+        return { issues: issues, warnings: warnings }
+      end
+
+      unless target[:code_sign_identity].include?('Apple Distribution')
+        issues << "#{target[:name]} Release-AppStore is not using Apple Distribution signing"
+      end
+      if target[:provisioning_profile].to_s.empty?
+        issues << "#{target[:name]} Release-AppStore is missing PROVISIONING_PROFILE_SPECIFIER"
+        return { issues: issues, warnings: warnings }
+      end
+
+      profile = installed_mobileprovision_by_name(target[:provisioning_profile], profile_cache)
+      unless profile.is_a?(Hash)
+        issues << "Provisioning profile \"#{target[:provisioning_profile]}\" for #{target[:name]} is not installed locally"
+        return { issues: issues, warnings: warnings }
+      end
+
+      profile_entitlements = profile['Entitlements'].is_a?(Hash) ? profile['Entitlements'] : {}
+      profile_groups = Array(profile_entitlements['com.apple.security.application-groups']).map(&:to_s)
+      target[:app_groups].each do |group|
+        next if profile_groups.include?(group)
+
+        issues << "Provisioning profile \"#{target[:provisioning_profile]}\" for #{target[:name]} does not allow app group #{group}"
+      end
+      { issues: issues, warnings: warnings }
     end
 
     def appstore_application_bundle_ids(project_yml_path, platform:)
@@ -4149,6 +4195,31 @@ module SaneMasterModules
       normalized.include?('ios') && !normalized.include?('macos')
     end
 
+    def appstore_entitlements_report(entitlements:, app_name:, platforms:)
+      if ios_only_appstore_submission?(platforms)
+        return {
+          issues: [], warnings: [],
+          summary: entitlements.first || 'not required for iOS-only lane'
+        }
+      end
+
+      mac_like = entitlements.reject { |path| path =~ %r{/(ios|watch|widget|extension)/}i }
+      appstore_entitlement = mac_like.find { |path| path =~ /appstore/i }
+      named_entitlement = mac_like.find do |path|
+        base = File.basename(path, '.entitlements')
+        base.casecmp?(app_name) || path.include?("/#{app_name}/")
+      end
+      target = appstore_entitlement || named_entitlement || mac_like.first || entitlements.first
+      return { issues: ['No entitlements file found'], warnings: [], summary: nil } unless target
+
+      content = safe_read(target)
+      warnings = []
+      unless plist_bool_true?(content, 'com.apple.security.app-sandbox')
+        warnings << 'No com.apple.security.app-sandbox in entitlements — required for Mac App Store'
+      end
+      { issues: [], warnings: warnings, summary: target }
+    end
+
     def appstore_deployment_target_summary(config:, appstore_config:, project_yml_content:)
       explicit = config.dig('release', 'min_system_version') || appstore_config['min_system_version']
       platforms = appstore_platforms(appstore_config)
@@ -5524,28 +5595,20 @@ module SaneMasterModules
       print '  │ Entitlements... '
       entitlements = Dir.glob('**/*.entitlements').reject { |p| p.include?('DerivedData') || p.include?('build/') }
       app_name = config['name'] || File.basename(Dir.pwd)
-      mac_like = entitlements.reject { |p| p =~ %r{/(ios|watch|widget|extension)/}i }
-      # For App Store preflight, prefer the macOS AppStore-specific entitlements file.
-      appstore_ent = mac_like.find { |p| p =~ /appstore/i }
-      named_ent = mac_like.find do |p|
-        base = File.basename(p, '.entitlements')
-        base.casecmp?(app_name) || p.include?("/#{app_name}/")
-      end
-      target_ent = appstore_ent || named_ent || mac_like.first || entitlements.first
-      if target_ent
-        ent_content = File.read(target_ent) rescue ''
-        has_sandbox = plist_bool_true?(ent_content, 'com.apple.security.app-sandbox')
-        has_hardened = true # Hardened runtime is in build settings, not entitlements
-        puts "✅ #{target_ent}"
-        unless has_sandbox
+      entitlements_report = appstore_entitlements_report(
+        entitlements: entitlements,
+        app_name: app_name,
+        platforms: platforms
+      )
+      if entitlements_report[:issues].empty?
+        puts "✅ #{entitlements_report[:summary]}"
+        entitlements_report[:warnings].each do |warning|
           puts '  │   ⚠️  No App Sandbox entitlement (required for MAS)'
-          warnings << "No com.apple.security.app-sandbox in entitlements — required for Mac App Store"
+          warnings << warning
         end
-      elsif ios_only_appstore_submission?(platforms)
-        puts '✅ not required for iOS-only lane'
       else
         puts '❌ no .entitlements file found'
-        issues << 'No entitlements file found'
+        entitlements_report[:issues].each { |issue| issues << issue }
       end
 
       # 2c. Privacy manifest (PrivacyInfo.xcprivacy)
@@ -6210,32 +6273,9 @@ module SaneMasterModules
         end
 
         mobile_signing_targets.each do |target|
-          unless target[:code_sign_identity].include?('Apple Distribution')
-            signing_issues << "#{target[:name]} Release-AppStore is not using Apple Distribution signing"
-          end
-
-          if target[:provisioning_profile].to_s.empty?
-            signing_issues << "#{target[:name]} Release-AppStore is missing PROVISIONING_PROFILE_SPECIFIER"
-            next
-          end
-
-          if target[:code_sign_style] != 'Manual'
-            signing_warnings << "#{target[:name]} Release-AppStore still uses automatic signing — the Mini path is safer with explicit App Store profiles"
-          end
-
-          profile = installed_mobileprovision_by_name(target[:provisioning_profile], profile_cache)
-          unless profile.is_a?(Hash)
-            signing_issues << "Provisioning profile \"#{target[:provisioning_profile]}\" for #{target[:name]} is not installed locally"
-            next
-          end
-
-          profile_entitlements = profile['Entitlements'].is_a?(Hash) ? profile['Entitlements'] : {}
-          profile_groups = Array(profile_entitlements['com.apple.security.application-groups']).map(&:to_s)
-          target[:app_groups].each do |group|
-            next if profile_groups.include?(group)
-
-            signing_issues << "Provisioning profile \"#{target[:provisioning_profile]}\" for #{target[:name]} does not allow app group #{group}"
-          end
+          target_report = appstore_mobile_signing_target_report(target, profile_cache: profile_cache)
+          signing_issues.concat(target_report[:issues])
+          signing_warnings.concat(target_report[:warnings])
         end
 
         if signing_issues.empty?
