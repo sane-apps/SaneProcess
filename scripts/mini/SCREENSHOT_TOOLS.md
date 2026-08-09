@@ -8,25 +8,34 @@ built-in-display work). Validator: `scripts/hooks/core/visual_receipt.rb` — th
 ## One command (do this first)
 
 ```bash
-scripts/mini/capture-web-screenshot.sh <url> <outputs/visual-audit-DIR> --label NAME --app APP --version VER
+scripts/mini/capture-web-screenshot.sh <url> <outputs/visual-audit-DIR> --source-root <project-root> --viewport desktop --label NAME --app APP --version VER
 ```
-Captures the URL on the Mini via Playwright (headless), copies the PNG back, and writes a
+Captures the URL on the Mini via Playwright with the Mini's Brave executable, copies the PNG back, and writes a
 `customer_ui_action_receipt.json` scaffold with `inspected:false`. Then **open the PNG**,
 confirm the change renders, and set `inspected:true` (top-level + screenshot entry). The
 gate stays red until you inspect — intentional, do not fabricate.
 
-## Website / URL screenshots → use Playwright on the Mini (preferred)
+`--source-root` must name the exact Git root. The wrapper requires matching Air
+and Mini HEAD, branch, dirty status, and source/config manifest before and after
+capture. It records those values in the receipt and rejects source or output-path
+escape, source drift, and Air/Mini mismatch.
 
-The Mini has the `playwright` CLI (1.60.0) on PATH. Chromium is installed
-(`playwright install chromium`, chromium-headless-shell cached under
-`~/Library/Caches/ms-playwright`). It renders **headless / off-screen**, so there is
+## Website / URL screenshots → use Playwright with Brave on the Mini (preferred)
+
+The Mini has the Playwright Node package and Brave. The wrapper launches
+`/Applications/Brave Browser.app/Contents/MacOS/Brave Browser` explicitly with
+`NODE_PATH=/opt/homebrew/lib/node_modules`. It renders **headless / off-screen**, so there is
 no GUI-session focus problem and no Codex/Terminal window contamination.
 
 ```bash
-ssh stephans-mac-mini.local \
-  'playwright screenshot --full-page --wait-for-timeout 4000 "https://sanebar.com" /tmp/shot.png'
-scp stephans-mac-mini.local:/tmp/shot.png <app>/outputs/visual-audit-<ver>/
+scripts/mini/capture-web-screenshot.sh https://sanebar.com <app>/outputs/visual-audit-<ver> \
+  --source-root <app> --viewport desktop --label home --app SaneBar --version <ver>
+scripts/mini/capture-web-screenshot.sh https://sanebar.com <app>/outputs/visual-audit-<ver> \
+  --source-root <app> --viewport 375 --label home --app SaneBar --version <ver>
 ```
+
+`desktop` is 1440x1000 and `375` is 375x900. The viewport label is included in
+the PNG name and receipt so desktop and mobile proof cannot be confused.
 
 Then write `outputs/visual-audit-<ver>/customer_ui_action_receipt.json`:
 
@@ -61,7 +70,7 @@ an inspectable window. Raw `screencapture` over ssh is blocked by `sane_bash_gua
 
 | Host | Playwright CLI | Brave | Chrome | Notes |
 |------|----------------|-------|--------|-------|
-| Mini | ✅ 1.60.0 (chromium installed) | ✅ | ❌ | Use Playwright for URL receipts |
+| Mini | ✅ Node package | ✅ | ❌ | Use the wrapper's explicit Brave executable for URL receipts |
 | Air  | ❌ (browser cache only) | ✅ | ✅ | Air is the owner's workstation — don't capture here except notch verification |
 
 `mini-gui-run.sh` was observed running in a context that could not access

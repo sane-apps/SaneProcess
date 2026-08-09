@@ -161,6 +161,11 @@ Deliberately manual Cloudflare maintenance commands should use
 Website visual verification should use real browser automation. On SaneApps
 operator Macs, use Brave with Playwright via `NODE_PATH=/opt/homebrew/lib/node_modules`
 and `executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"`.
+The canonical route is `scripts/mini/capture-web-screenshot.sh`; pass
+the exact project Git root with `--source-root`, then `--viewport desktop`
+(1440x1000) or `--viewport 375` (375x900). The receipt binds target HEAD,
+branch, dirty status, and a deterministic source/config manifest across the Air
+and Mini; the wrapper rejects path escape, mismatch, or capture-time drift.
 Save screenshots under `outputs/playwright/` or the workflow's existing
 `outputs/<workflow>/visual/` directory.
 

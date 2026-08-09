@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require_relative '../hooks/test/test_framework'
+require 'json'
 require 'open3'
 require 'tmpdir'
 
@@ -11,6 +12,8 @@ RUNNER_PATH = File.expand_path('mini-gui-run.sh', __dir__)
 APPLE_SCRIPT_PATH = File.expand_path('mini-gui-run.applescript', __dir__)
 RECLAIM_PATH = File.expand_path('mini-reclaim-automation-windows.sh', __dir__)
 SCREENSHOT_WRAPPER_PATH = File.expand_path('capture-mini-screenshot.sh', __dir__)
+WEB_SCREENSHOT_WRAPPER_PATH = File.expand_path('capture-web-screenshot.sh', __dir__)
+SCREENSHOT_DOC_PATH = File.expand_path('SCREENSHOT_TOOLS.md', __dir__)
 VISUAL_GUARD_PATH = File.expand_path('mini-visual-workspace-guard.sh', __dir__)
 MINI_SAFARI_PATH = File.expand_path('mini-safari.sh', __dir__)
 
@@ -18,6 +21,8 @@ runner_source = File.read(RUNNER_PATH)
 apple_script_source = File.read(APPLE_SCRIPT_PATH)
 reclaim_source = File.read(RECLAIM_PATH)
 screenshot_wrapper_source = File.read(SCREENSHOT_WRAPPER_PATH)
+web_screenshot_wrapper_source = File.read(WEB_SCREENSHOT_WRAPPER_PATH)
+screenshot_doc_source = File.read(SCREENSHOT_DOC_PATH)
 visual_guard_source = File.read(VISUAL_GUARD_PATH)
 mini_safari_source = File.read(MINI_SAFARI_PATH)
 
@@ -407,6 +412,72 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(apple_script_source, 'tell application "Finder" to activate')
       assert(!apple_script_source.include?('repeat with w in windows'),
              'mini-gui-run.applescript should not carry its own legacy window-sweep loop')
+      true
+    end
+  end
+
+  test_category('Web screenshot wrapper') do
+    test('source snapshot, parity, escape rejection, and viewports are behavioral') do
+      Dir.mktmpdir do |dir|
+        root = File.join(dir, 'source')
+        peer = File.join(dir, 'peer')
+        Dir.mkdir(root)
+        File.write(File.join(root, '.gitignore'), "outputs/\n")
+        File.write(File.join(root, 'index.html'), "stable\n")
+        [%w[init -q], %w[config user.email test@example.com], %w[config user.name Test], %w[add .], %w[commit -qm initial]].each do |args|
+          output, status = Open3.capture2e('git', '-C', root, *args)
+          assert(status.success?, output)
+        end
+
+        snapshot_out, snapshot_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, '--source-snapshot', root)
+        snapshot = JSON.parse(snapshot_out)
+        assert(snapshot_status.success?, snapshot_out)
+        assert(snapshot['dirty'] == false, snapshot_out)
+        assert(snapshot['file_count'] == 2, snapshot_out)
+        assert(snapshot['manifest_sha256'].match?(/\A[0-9a-f]{64}\z/), snapshot_out)
+
+        clone_out, clone_status = Open3.capture2e('git', 'clone', '-q', root, peer)
+        assert(clone_status.success?, clone_out)
+        parity_out, parity_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, '--source-parity', root, peer)
+        assert(parity_status.success?, parity_out)
+        File.write(File.join(peer, 'index.html'), "drift\n")
+        _, drift_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, '--source-parity', root, peer)
+        assert(!drift_status.success?, 'source drift must fail parity')
+        bad_out, bad_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, 'https://example.com', File.join(root, 'outputs', 'bad'), '--source-root', root, '--viewport', 'phone', '--dry-run')
+        assert(!bad_status.success?, 'unknown viewport must fail')
+        assert_includes(bad_out, 'unsupported viewport: phone')
+        desktop_out, desktop_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, 'https://example.com', File.join(root, 'outputs', 'desktop'), '--source-root', root, '--viewport', 'desktop', '--dry-run')
+        mobile_out, mobile_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, 'https://example.com', File.join(root, 'outputs', 'mobile'), '--source-root', root, '--viewport', '375', '--dry-run')
+        outside_out, outside_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, 'https://example.com', File.join(dir, 'outside'), '--source-root', root, '--dry-run')
+        assert(desktop_status.success?, desktop_out)
+        assert(mobile_status.success?, mobile_out)
+        assert(!outside_status.success? && outside_out.include?('output directory must stay inside'), outside_out)
+        assert_includes(desktop_out, '"browser":"Brave"')
+        assert_includes(desktop_out, '"viewport_label":"desktop","width":1440,"height":1000')
+        assert_includes(mobile_out, '"viewport_label":"375","width":375,"height":900')
+        File.symlink('/etc/hosts', File.join(root, 'escape'))
+        escape_out, escape_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, '--source-snapshot', root)
+        assert(!escape_status.success?, escape_out)
+        assert_includes(escape_out, 'source path is not a regular file: escape')
+      end
+      true
+    end
+
+    test('capture is Brave-only and binds exact target source before and after') do
+      assert_includes(web_screenshot_wrapper_source, 'executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"')
+      assert_includes(web_screenshot_wrapper_source, 'NODE_PATH=${PLAYWRIGHT_NODE_PATH} node -')
+      assert_includes(web_screenshot_wrapper_source, 'captured_with: "Playwright headless Brave on the Mini')
+      %w[git_head git_branch git_dirty manifest_sha256 LOCAL_SOURCE_PRE LOCAL_SOURCE_POST REMOTE_SOURCE_PRE REMOTE_SOURCE_POST].each do |token|
+        assert_includes(web_screenshot_wrapper_source, token)
+      end
+      assert_includes(web_screenshot_wrapper_source, '--source-root is required')
+      assert_includes(web_screenshot_wrapper_source, 'output directory must stay inside')
+      assert(!web_screenshot_wrapper_source.include?('playwright install chromium'),
+             'web wrapper must not install cached Chromium')
+      assert_includes(screenshot_doc_source, '--viewport desktop')
+      assert_includes(screenshot_doc_source, '--viewport 375')
+      assert(!screenshot_doc_source.include?('chromium-headless-shell'),
+             'screenshot docs must not route through cached Chromium')
       true
     end
   end
