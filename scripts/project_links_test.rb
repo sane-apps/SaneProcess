@@ -89,6 +89,35 @@ exit(run_tests('Shared project links') do
     true
   end
 
+  test('sync discovery enrolls manifests across every SaneApps project bucket') do
+    Dir.mktmpdir('sane-project-discovery-') do |root|
+      expected = %w[
+        apps/SaneFixture
+        websites/fixture.test
+        clients/fixture
+        clients/fixture/nested
+        infra/FixtureTool
+        mcp/fixture-server
+      ]
+      expected.each do |relative|
+        project = File.join(root, relative)
+        FileUtils.mkdir_p(project)
+        File.write(File.join(project, '.saneprocess'), "name: Fixture\n")
+      end
+      legacy = File.join(root, 'apps', 'LegacyFixture', '.claude', 'rules')
+      FileUtils.mkdir_p(legacy)
+      ignored = File.join(root, 'clients', 'fixture', 'node_modules', 'ignored')
+      FileUtils.mkdir_p(ignored)
+      File.write(File.join(ignored, '.saneprocess'), "name: Ignored\n")
+
+      checker = SyncCheck.new([], saneapps_root: root)
+      discovered = checker.send(:detect_sibling_projects)
+      wanted = (expected.map { |relative| File.join(root, relative) } + [File.expand_path('../..', legacy)]).sort
+      assert_eq(discovered, wanted)
+    end
+    true
+  end
+
   test('scaffold creates the shared relative lefthook link') do
     Dir.mktmpdir('sane-project-link-scaffold-') do |apps_root|
       stdout, stderr, status = Open3.capture3(

@@ -20,6 +20,7 @@
 
 require 'digest'
 require 'fileutils'
+require 'find'
 require 'json'
 require_relative 'project_links'
 
@@ -32,6 +33,9 @@ class SyncCheck
   SETTINGS_TEMPLATE = File.join(SANEPROCESS_ROOT, '.claude', 'settings.json')
   TEMPLATES_DIR = File.join(SANEPROCESS_ROOT, 'templates')
   GOVERNANCE_DIR = File.join(File.dirname(File.dirname(SANEPROCESS_ROOT)), 'meta', 'governance')
+  SANEAPPS_ROOT = File.dirname(File.dirname(SANEPROCESS_ROOT))
+  PROJECT_BUCKETS = %w[apps websites clients infra mcp].freeze
+  DISCOVERY_PRUNE_DIRS = %w[.git .build build DerivedData node_modules outputs vendor].freeze
 
   # Config templates that should be synced to all projects
   SYNC_CONFIGS = {
@@ -95,9 +99,10 @@ class SyncCheck
 
   SYNC_MODULES = (CORE_MODULES + CUSTOMIZABLE_MODULES).freeze
 
-  def initialize(args = [])
+  def initialize(args = [], saneapps_root: SANEAPPS_ROOT)
     @fix_mode = args.delete('--fix')
     @global_mode = args.delete('--global')
+    @saneapps_root = File.expand_path(saneapps_root)
     @project_paths = args.empty? ? detect_sibling_projects : args
     @diffs = []
   end
@@ -291,39 +296,32 @@ class SyncCheck
   private
 
   def detect_sibling_projects
-    # Check both infra/ siblings and apps/ directory
-    apps_dir = File.join(File.dirname(File.dirname(SANEPROCESS_ROOT)), 'apps')
-    infra_dir = File.dirname(SANEPROCESS_ROOT)
-
     projects = []
+    PROJECT_BUCKETS.each do |bucket_name|
+      bucket = File.join(@saneapps_root, bucket_name)
+      next unless File.directory?(bucket)
 
-    # Apps directory (primary location)
-    if File.directory?(apps_dir)
-      Dir.entries(apps_dir).each do |entry|
-        next if entry.start_with?('.')
-
-        path = File.join(apps_dir, entry)
-        next unless File.directory?(path)
-        next unless File.exist?(File.join(path, '.saneprocess')) ||
-                    File.directory?(File.join(path, '.claude', 'rules'))
-
-        projects << path
+      Find.find(bucket) do |path|
+        metadata = File.lstat(path)
+        basename = File.basename(path)
+        hidden_or_heavy = basename.start_with?('.') || DISCOVERY_PRUNE_DIRS.include?(basename)
+        if metadata.directory? && path != bucket && hidden_or_heavy
+          Find.prune
+        elsif metadata.file? && basename == '.saneprocess'
+          project = File.dirname(path)
+          projects << project unless project == SANEPROCESS_ROOT
+        end
       end
     end
 
-    # Infra siblings (legacy compatibility)
-    Dir.entries(infra_dir).each do |entry|
-      next if entry.start_with?('.')
-      next if entry == 'SaneProcess'
-
-      path = File.join(infra_dir, entry)
-      next unless File.directory?(path)
-      next unless File.exist?(File.join(path, '.saneprocess'))
-
-      projects << path unless projects.include?(path)
+    # Preserve the legacy enrollment signal for top-level apps that predate a
+    # .saneprocess manifest. New projects must use the manifest.
+    apps_dir = File.join(@saneapps_root, 'apps')
+    Dir.glob(File.join(apps_dir, '*', '.claude', 'rules')).each do |rules|
+      projects << File.expand_path('../..', rules)
     end
 
-    projects
+    projects.uniq.sort
   end
 
   def check_project(project_path)
