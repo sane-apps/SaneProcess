@@ -12,7 +12,13 @@ class MachineCleanupRetentionHarness
 
   attr_reader :events
 
-  def initialize(sizes: {}, snapshots: nil)
+  FakeStatus = Struct.new(:ok) do
+    def success?
+      ok
+    end
+  end
+
+  def initialize(sizes: {}, snapshots: nil, hdiutil_info: '', hdiutil_ok: true)
     @sizes = sizes
     @snapshots = snapshots || [{
       ok: true,
@@ -21,6 +27,8 @@ class MachineCleanupRetentionHarness
       capacity: '99%'
     }]
     @events = []
+    @hdiutil_info = hdiutil_info
+    @hdiutil_ok = hdiutil_ok
   end
 
   def running_on_mini_host?
@@ -45,8 +53,13 @@ class MachineCleanupRetentionHarness
   end
 
   def empty_user_trash
-    @events << [:empty, File.expand_path('~/.Trash')]
-    true
+    result = super
+    @events << [:empty, File.expand_path('~/.Trash')] if result
+    result
+  end
+
+  def machine_cleanup_hdiutil_info
+    [@hdiutil_info, FakeStatus.new(@hdiutil_ok)]
   end
 
   def system(*args, **kwargs)
@@ -179,6 +192,52 @@ exit(run_tests('SaneMaster Machine Cleanup Retention Tests') do
   end
 
   test_category('explicit permanent reclaim') do
+    test('refuses to empty Trash while a mounted disk image is backed by Trash') do
+      with_retention_home do |home|
+        trash = File.join(home, '.Trash')
+        image = File.join(trash, 'iOS_26.5_runtime.dmg')
+        FileUtils.mkdir_p(trash)
+        File.write(image, 'mounted runtime backing image')
+        subject = MachineCleanupRetentionHarness.new(
+          sizes: { trash => 18.0 },
+          hdiutil_info: "image-path      : #{image}\n"
+        )
+        plan = {
+          disk: { ok: true, available_bytes: 1, available_gb: 1, capacity: '99%' },
+          actions: [{ type: 'empty_trash', category: 'trash', path: trash, size_gb: 18.0 }]
+        }
+
+        result = subject.send(:apply_machine_cleanup_plan, plan, retention_options(empty_trash: true))
+
+        assert_eq(result[:success], false)
+        assert_eq(subject.events, [])
+        assert(File.file?(image), 'mounted runtime backing image must remain in Trash')
+        assert_includes(result[:failed].first[:error], 'valid Trash root')
+      end
+    end
+
+    test('refuses to empty Trash when mounted disk-image inspection fails') do
+      with_retention_home do |home|
+        trash = File.join(home, '.Trash')
+        file = File.join(trash, 'keep.txt')
+        FileUtils.mkdir_p(trash)
+        File.write(file, 'keep')
+        subject = MachineCleanupRetentionHarness.new(
+          sizes: { trash => 1.0 }, hdiutil_ok: false
+        )
+        plan = {
+          disk: { ok: true, available_bytes: 1, available_gb: 1, capacity: '99%' },
+          actions: [{ type: 'empty_trash', category: 'trash', path: trash, size_gb: 1.0 }]
+        }
+
+        result = subject.send(:apply_machine_cleanup_plan, plan, retention_options(empty_trash: true))
+
+        assert_eq(result[:success], false)
+        assert_eq(subject.events, [])
+        assert(File.file?(file), 'Trash must remain intact when disk-image inspection fails')
+      end
+    end
+
     test('explicit empty Trash bypasses the routine size threshold') do
       with_retention_home do |home|
         trash = File.join(home, '.Trash')

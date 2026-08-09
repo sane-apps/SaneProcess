@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'fileutils'
+require 'open3'
 
 module SaneMasterModules
   module MachineCleanupApply
@@ -89,6 +90,16 @@ module SaneMasterModules
       return false unless Dir.exist?(trash)
       return false if File.symlink?(trash)
 
+      mounted_images = mounted_disk_images_backed_by_trash(trash)
+      if mounted_images.nil?
+        warn 'Refusing to empty Trash because mounted disk-image inspection failed.'
+        return false
+      end
+      unless mounted_images.empty?
+        warn "Refusing to empty Trash because #{mounted_images.length} mounted disk image(s) use a backing file in Trash."
+        return false
+      end
+
       Dir.children(trash).each do |entry|
         path = File.join(trash, entry)
         if File.symlink?(path) || File.file?(path)
@@ -103,6 +114,26 @@ module SaneMasterModules
     rescue SystemCallError => error
       warn "Failed to empty Trash: #{error.message}"
       false
+    end
+
+    def mounted_disk_images_backed_by_trash(trash)
+      output, status = machine_cleanup_hdiutil_info
+      return nil unless status.success?
+
+      trash_prefix = "#{File.expand_path(trash)}/"
+      output.each_line.each_with_object([]) do |line, paths|
+        match = line.match(/\A\s*image-path\s*:\s*(.+?)\s*\z/)
+        next unless match
+
+        path = File.expand_path(match[1])
+        paths << path if path.start_with?(trash_prefix)
+      end.uniq
+    rescue SystemCallError
+      nil
+    end
+
+    def machine_cleanup_hdiutil_info
+      Open3.capture2e('/usr/bin/hdiutil', 'info')
     end
 
     def trash_path(path)
