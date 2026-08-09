@@ -31,6 +31,11 @@ module SaneMasterModules
           screenshot_paths: files, source_identity: source_identity
         ))
       end
+      if ios_supports_ipad
+        issues.concat(storefront_ipad_visual_issues(
+          root: root, screenshots_config: screenshots_config, source_identity: source_identity
+        ))
+      end
 
       { ok: issues.empty?, issues: issues, family_count: families.length }
     end
@@ -134,6 +139,66 @@ module SaneMasterModules
         selected << row
       end
       [selected_rows, issues]
+    end
+
+    def storefront_ipad_visual_issues(root:, screenshots_config:, source_identity:)
+      receipt_setting = screenshots_config['ipad_gate_receipt'].to_s
+      verdict_setting = screenshots_config['ipad_visual_verdict'].to_s
+      issues = []
+      issues << 'ipad aggregate receipt path is not configured' if receipt_setting.empty?
+      issues << 'ipad visual verdict path is not configured' if verdict_setting.empty?
+      return issues unless issues.empty?
+
+      receipt_path = File.expand_path(receipt_setting, root)
+      verdict_path = File.expand_path(verdict_setting, root)
+      issues.concat(safe_storefront_file_issues(
+        root, receipt_path, 'ipad aggregate receipt', require_private: true
+      ))
+      issues.concat(safe_storefront_file_issues(
+        root, verdict_path, 'ipad visual verdict', require_private: true
+      ))
+      return issues unless issues.empty?
+
+      receipt = JSON.parse(File.read(receipt_path, encoding: Encoding::UTF_8))
+      verdict = JSON.parse(File.read(verdict_path, encoding: Encoding::UTF_8))
+      commit = source_identity[:commit].to_s
+      branch = source_identity[:branch].to_s
+      issues << 'ipad aggregate receipt status is not passed' unless receipt['status'].to_s == 'passed'
+      issues << 'ipad aggregate receipt commit does not match current pushed source' unless
+        receipt['git_commit'].to_s == commit
+      issues << 'ipad aggregate receipt branch does not match current pushed source' unless
+        receipt['git_branch'].to_s == branch
+      issues << 'ipad aggregate receipt is not bound to its pushed upstream commit' unless
+        receipt['git_pushed'] == true && receipt['git_upstream_commit'].to_s == commit
+      issues << 'ipad aggregate receipt reports dirty source' unless receipt['git_dirty'] == false
+      state_count = receipt['state_count']
+      states = receipt['states']
+      issues << 'ipad aggregate receipt state inventory is invalid' unless
+        state_count.is_a?(Integer) && state_count.positive? && states.is_a?(Array) && states.length == state_count
+
+      binding = verdict['source_binding'].is_a?(Hash) ? verdict['source_binding'] : {}
+      issues << 'ipad visual verdict status is not passed' unless verdict['status'].to_s == 'passed'
+      issues << 'ipad visual verdict does not clear release' unless verdict['release_clearance'] == true
+      issues << 'ipad visual verdict was not inspected at original size' unless
+        verdict['inspected_at_original_size'] == true
+      inspected = verdict['inspected_count']
+      passed = verdict['passed_count']
+      failed = verdict['failed_count']
+      failed_states = verdict['failed_states']
+      issues << 'ipad visual verdict counts do not prove every aggregate state passed' unless
+        inspected == state_count && passed == state_count && failed == 0 && failed_states == []
+      issues << 'ipad visual verdict commit does not match current pushed source' unless
+        binding['git_commit'].to_s == commit
+      issues << 'ipad visual verdict aggregate receipt hash does not match' unless
+        binding['aggregate_receipt_sha256'].to_s == Digest::SHA256.file(receipt_path).hexdigest
+      issues << 'ipad visual verdict source manifest does not match aggregate receipt' unless
+        !receipt['source_manifest_sha256'].to_s.empty? &&
+        binding['source_manifest_sha256'].to_s == receipt['source_manifest_sha256'].to_s
+      issues
+    rescue JSON::ParserError => error
+      ["ipad visual evidence is not valid JSON: #{error.message}"]
+    rescue StandardError => error
+      ["ipad visual evidence could not be verified: #{error.message}"]
     end
 
     def storefront_relative_path(root, path)

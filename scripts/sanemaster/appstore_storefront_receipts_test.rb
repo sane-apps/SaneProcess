@@ -39,7 +39,36 @@ def storefront_fixture(root, family:, commit:, branch: 'release/test', bind_imag
   receipt_path = File.join(File.dirname(directory), "storefront-#{family}-receipt.json")
   File.write(receipt_path, JSON.pretty_generate(receipt))
   File.chmod(0o600, receipt_path)
+  ipad_visual_fixture(root, commit: commit, branch: branch) if family == 'ipad'
   [image, receipt_path]
+end
+
+def ipad_visual_fixture(root, commit:, branch:)
+  directory = File.join(root, 'outputs', 'app-review-current-source')
+  FileUtils.mkdir_p(directory)
+  receipt_path = File.join(directory, 'ipad-release-receipt.json')
+  receipt = {
+    'status' => 'passed', 'git_commit' => commit, 'git_branch' => branch,
+    'git_upstream_commit' => commit, 'git_pushed' => true, 'git_dirty' => false,
+    'state_count' => 1, 'states' => [{ 'path' => 'state.png' }],
+    'source_manifest_sha256' => 'd' * 64
+  }
+  File.write(receipt_path, JSON.pretty_generate(receipt))
+  File.chmod(0o600, receipt_path)
+  verdict = {
+    'status' => 'passed', 'release_clearance' => true,
+    'inspected_at_original_size' => true,
+    'inspected_count' => 1, 'passed_count' => 1, 'failed_count' => 0,
+    'failed_states' => [],
+    'source_binding' => {
+      'git_commit' => commit,
+      'aggregate_receipt_sha256' => Digest::SHA256.file(receipt_path).hexdigest,
+      'source_manifest_sha256' => receipt.fetch('source_manifest_sha256')
+    }
+  }
+  verdict_path = File.join(directory, 'ipad-visual-verdict.json')
+  File.write(verdict_path, JSON.pretty_generate(verdict))
+  File.chmod(0o600, verdict_path)
 end
 
 exit(run_tests('App Store source-bound storefront receipts') do
@@ -47,7 +76,9 @@ exit(run_tests('App Store source-bound storefront receipts') do
   identity = { commit: 'a' * 40, branch: 'release/test', clean: true, pushed: true }
   config = {
     'ios' => 'outputs/app-review-current-source/storefront-iphone/*.png',
-    'ipad' => 'outputs/app-review-current-source/storefront-ipad/*.png'
+    'ipad' => 'outputs/app-review-current-source/storefront-ipad/*.png',
+    'ipad_gate_receipt' => 'outputs/app-review-current-source/ipad-release-receipt.json',
+    'ipad_visual_verdict' => 'outputs/app-review-current-source/ipad-visual-verdict.json'
   }
 
   test('accepts exact private receipts that bind both device-family images and pushed source') do
@@ -171,6 +202,32 @@ exit(run_tests('App Store source-bound storefront receipts') do
         source_identity: identity, ios_supports_ipad: true
       )
       assert_includes(report[:issues].join("\n"), 'iphone storefront receipt path contains a symlink')
+    end
+    true
+  end
+
+  test('rejects a failed, stale, or count-incomplete iPad visual verdict') do
+    Dir.mktmpdir('storefront-visual-verdict-') do |root|
+      storefront_fixture(root, family: 'iphone', commit: identity[:commit])
+      storefront_fixture(root, family: 'ipad', commit: identity[:commit])
+      verdict_path = File.join(root, config.fetch('ipad_visual_verdict'))
+      verdict = JSON.parse(File.read(verdict_path))
+      verdict['status'] = 'failed'
+      verdict['release_clearance'] = false
+      verdict['passed_count'] = 0
+      verdict['failed_count'] = 1
+      verdict['failed_states'] = ['chooser.png']
+      verdict['source_binding']['git_commit'] = 'b' * 40
+      File.write(verdict_path, JSON.pretty_generate(verdict))
+      report = subject.appstore_storefront_receipt_report(
+        root: root, screenshots_config: config,
+        source_identity: identity, ios_supports_ipad: true
+      )
+      joined = report[:issues].join("\n")
+      assert_includes(joined, 'ipad visual verdict status is not passed')
+      assert_includes(joined, 'ipad visual verdict does not clear release')
+      assert_includes(joined, 'ipad visual verdict counts do not prove every aggregate state passed')
+      assert_includes(joined, 'ipad visual verdict commit does not match current pushed source')
     end
     true
   end
