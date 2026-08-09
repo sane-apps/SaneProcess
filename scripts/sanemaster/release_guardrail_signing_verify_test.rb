@@ -3,12 +3,17 @@
 
 require 'tmpdir'
 require_relative '../hooks/test/test_framework'
+require_relative 'base'
 require_relative 'release'
 
 include TestFramework
 
 class ReleaseGuardrailSigningHarness
   include SaneMasterModules::Release
+end
+
+class VerifySimulatorDestinationHarness
+  include SaneMasterModules::Base
 end
 
 status = run_tests('SaneMaster Release Guardrails: Signing and verify output') do
@@ -239,6 +244,34 @@ status = run_tests('SaneMaster Release Guardrails: Signing and verify output') d
       assert(subject.send(:verify_output_indicates_failure?, body), 'raw failure markers should still be detected')
       assert(!subject.send(:verify_output_indicates_runtime_dedupe_cleanup?, body, app_name: 'SaneBar'),
              'real test failures must not be treated as dedupe-only cleanup')
+      true
+    end
+  end
+
+  test_category('iOS simulator verify destination') do
+    test('maps a conventional custom iPhone simulator label to the default device type') do
+      harness = VerifySimulatorDestinationHarness.new
+      harness.define_singleton_method(:ios_simulator_device_types) do
+        [
+          { name: 'iPhone 17 Pro', identifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro' },
+          { name: 'iPad Pro 13-inch (M5)', identifier: 'com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB' }
+        ]
+      end
+
+      device_type = harness.send(:ios_simulator_device_type_for, 'SaneLot-iPhone')
+
+      assert_eq(device_type[:name], 'iPhone 17 Pro')
+      assert_eq(device_type[:identifier], 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro')
+      true
+    end
+
+    test('does not guess a device type for an unknown custom simulator family') do
+      harness = VerifySimulatorDestinationHarness.new
+      harness.define_singleton_method(:ios_simulator_device_types) do
+        [{ name: 'iPhone 17 Pro', identifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro' }]
+      end
+
+      assert_eq(harness.send(:ios_simulator_device_type_for, 'SaneLot-QA'), nil)
       true
     end
   end

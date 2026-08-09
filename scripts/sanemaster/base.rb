@@ -20,6 +20,7 @@ module SaneMasterModules
     HOMEBREW_RUBY = '/opt/homebrew/opt/ruby/bin/ruby'
     HOMEBREW_BUNDLE = '/opt/homebrew/opt/ruby/bin/bundle'
     HOMEBREW_RUBY_GEM_BIN = '/opt/homebrew/lib/ruby/gems/4.0.0/bin'
+    DEFAULT_IOS_SIMULATOR_DEVICE_TYPE_NAME = 'iPhone 17 Pro'
     REQUIRED_RUBY_GEMS = {
       'jwt' => 'App Store Connect submission helpers'
     }.freeze
@@ -300,7 +301,7 @@ module SaneMasterModules
     def create_ios_simulator_destination(simulator_name, requested_os = nil)
       return nil if ENV['SANEMASTER_AUTO_CREATE_IOS_SIMULATOR'] == '0'
 
-      device_type = ios_simulator_device_types.find { |candidate| candidate[:name] == simulator_name }
+      device_type = ios_simulator_device_type_for(simulator_name)
       return nil unless device_type
 
       runtime = ios_simulator_runtimes_for(device_type[:identifier], requested_os).max_by do |candidate|
@@ -322,6 +323,17 @@ module SaneMasterModules
       output.to_s.lines.map(&:strip).find { |line| line.match?(/\A[0-9A-F-]{36}\z/i) }
     rescue StandardError
       nil
+    end
+
+    def ios_simulator_device_type_for(simulator_name)
+      device_types = ios_simulator_device_types
+      exact = device_types.find { |candidate| candidate[:name] == simulator_name }
+      return exact if exact
+
+      custom_iphone = simulator_name.to_s.split(/[-_\s]+/).any? { |token| token.casecmp('iPhone').zero? }
+      return nil unless custom_iphone
+
+      device_types.find { |candidate| candidate[:name] == DEFAULT_IOS_SIMULATOR_DEVICE_TYPE_NAME }
     end
 
     def ios_simulator_device_types
@@ -381,7 +393,7 @@ module SaneMasterModules
     end
 
     def default_project_test_destination
-      ios_only_project? ? 'platform=iOS Simulator,name=iPhone 17 Pro' : 'platform=macOS,arch=arm64'
+      ios_only_project? ? "platform=iOS Simulator,name=#{DEFAULT_IOS_SIMULATOR_DEVICE_TYPE_NAME}" : 'platform=macOS,arch=arm64'
     end
 
     def ios_only_project?
