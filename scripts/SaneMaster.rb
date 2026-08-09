@@ -223,7 +223,7 @@ class SaneMaster
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
         'runtime_evidence' => { args: '[--executable PATH|--pid PID] [--break File.swift:LINE] [--expr EXPR]', desc: 'Capture LLDB runtime evidence without launching apps' },
         'visual_smoke' => { args: '[--app NAME] [--require-peekaboo] [--json] [--dry-run]', desc: 'Capture Peekaboo visual/AX evidence receipt' },
-        'resource_soak' => { args: '[--adaptive|--fixed] [--duration-seconds N] [--interval-seconds N] [--json]', desc: 'Run the Mini release-candidate resource check proof' },
+        'resource_soak' => { args: '[--target KIND] [target options] [--adaptive|--fixed] [--duration-seconds N] [--] [COMMAND...]', desc: 'Run a bounded Mini resource receipt' },
         'customer_ui_sweep' => { args: '[--execution-evidence PATH] [--json] [--dry-run] [--no-exit]', desc: 'Run the app customer workflow runner, then validate the release UI contract' },
         'customer_ui_contract' => { args: '[--json] [--no-exit] [--strict-visual]', desc: 'Validate release-required customer UI action QA manifest and fresh receipt' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
@@ -433,6 +433,7 @@ class SaneMaster
                                   refresh_qa_snapshots
 	                                  qa_refresh
 	                                ]).freeze
+  MINI_REQUIRED_COMMANDS = Set.new(%w[resource_soak resource-soak]).freeze
   SETAPP_ROUTE_COMMANDS = Set.new(%w[
                                     setapp_status
                                     setapp-status
@@ -579,8 +580,11 @@ class SaneMaster
 
   def maybe_route_to_mini!(command, args)
     routed_appstore_binding_dir = nil
-    return if ENV['SANEMASTER_DISABLE_MINI_ROUTING'] == '1'
     return if running_on_mini_host?
+    if ENV['SANEMASTER_DISABLE_MINI_ROUTING'] == '1'
+      abort "❌ #{command} requires the Mac mini; routing cannot be disabled on this host." if MINI_REQUIRED_COMMANDS.include?(command)
+      return
+    end
     return unless MINI_FIRST_COMMANDS.include?(command)
 
     @route_logs_to_stderr = machine_json_output_requested?(args)
@@ -591,23 +595,27 @@ class SaneMaster
     end
 
     if args.include?('--local') || ENV['SANEMASTER_FORCE_LOCAL'] == '1'
+      abort "❌ #{command} requires the Mac mini and cannot run with a local bypass." if MINI_REQUIRED_COMMANDS.include?(command)
       route_log('⚠️  Mini-first bypass active (--local or SANEMASTER_FORCE_LOCAL=1); running locally.')
       return
     end
 
     unless mini_reachable?
+      abort "❌ Mac mini is unreachable; #{command} will not fall back to local execution." if MINI_REQUIRED_COMMANDS.include?(command)
       route_log('⚠️  Mac mini is unreachable. Falling back to local execution.')
       return
     end
 
     remote_repo = map_local_path_to_mini(Dir.pwd)
     unless remote_repo
+      abort "❌ Could not map local path to mini for #{command}: #{Dir.pwd}" if MINI_REQUIRED_COMMANDS.include?(command)
       route_log("⚠️  Could not map local path to mini: #{Dir.pwd}")
       route_log('   Falling back to local execution.')
       return
     end
 
     unless mini_path_exists?(remote_repo)
+      abort "❌ Repo not found on mini for #{command}: #{remote_repo}" if MINI_REQUIRED_COMMANDS.include?(command)
       route_log("⚠️  Repo not found on mini: #{remote_repo}")
       route_log('   Falling back to local execution.')
       return
@@ -678,6 +686,25 @@ class SaneMaster
         SANEMASTER_SKIP_AUTO_DEDUPE
         SANEBAR_BUILD_CONFIG
         SANEMASTER_CANONICAL_APP_PATH
+        SANEMASTER_RESOURCE_SOAK_ADAPTIVE
+        SANEMASTER_RESOURCE_SOAK_SECONDS
+        SANEMASTER_RESOURCE_SOAK_MIN_SECONDS
+        SANEMASTER_RESOURCE_SOAK_INTERVAL_SECONDS
+        SANEMASTER_RESOURCE_SOAK_INITIAL_INTERVAL_SECONDS
+        SANEMASTER_RESOURCE_SOAK_INITIAL_DURATION_SECONDS
+        SANEMASTER_RESOURCE_SOAK_BASELINE_SAMPLES
+        SANEMASTER_RESOURCE_SOAK_ROLLING_WINDOW_SECONDS
+        SANEMASTER_RESOURCE_SOAK_CONSECUTIVE_FAILURES
+        SANEMASTER_RESOURCE_SOAK_CPU_AVG_MAX
+        SANEMASTER_RESOURCE_SOAK_RSS_PEAK_MB_MAX
+        SANEMASTER_RESOURCE_SOAK_RSS_GROWTH_MB_MAX
+        SANEMASTER_RESOURCE_SOAK_PHYSICAL_PEAK_MB_MAX
+        SANEMASTER_RESOURCE_SOAK_PHYSICAL_GROWTH_MB_MAX
+        SANEMASTER_RESOURCE_SOAK_FD_PEAK_MAX
+        SANEMASTER_RESOURCE_SOAK_FD_GROWTH_MAX
+        SANEMASTER_RESOURCE_SOAK_ARTIFACT_PATH
+        SANEMASTER_RESOURCE_SOAK_LOG_PATH
+        SANEMASTER_RESOURCE_SOAK_PROGRESS
         SANEPROCESS_APPROVE_FAST_RELEASE
         SANEPROCESS_APPROVE_OPEN_REGRESSION_RELEASE
         SANEPROCESS_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
@@ -3103,21 +3130,34 @@ PY
       ]
     },
     'resource_soak' => {
-      usage: 'resource_soak [--adaptive|--fixed] [--duration-seconds N] [--interval-seconds N] [--json]',
-      description: 'Run the adaptive Mini resource check against the already launched /Applications release candidate and write /tmp/sanebar_runtime_resource_soak.json for the customer UI release contract.',
+      usage: 'resource_soak [--target macos-app|ios-simulator|browser-extension|command-tree] [target options] [--adaptive|--fixed] [--duration-seconds N] [--] [COMMAND...]',
+      description: 'Write a bounded Mini resource receipt for an attached app/private Brave process tree or an owned command process group. The legacy macOS app defaults and receipt remain compatible.',
       flags: {
+        '--target KIND' => 'Target kind (default: macos-app)',
+        '--app NAME' => 'Installed macOS app name (legacy target)',
+        '--bundle-id ID' => 'iOS app bundle identifier',
+        '--simulator-udid UDID' => 'Booted Simulator device identifier',
+        '--session-receipt PATH' => 'Private Brave automation-session receipt',
+        '--cwd PATH' => 'Working directory for an owned command tree',
+        '-- COMMAND...' => 'Exec argv for command-tree; no shell expansion is used',
         '--adaptive' => 'Allow early pass after stable 4 minute minimum (default)',
         '--fixed' => 'Run the full duration and record fixed-duration evidence only',
         '--duration-seconds N' => 'Adaptive cap or fixed duration in seconds (default: 600)',
+        '--timeout-seconds N' => 'Alias for the bounded duration',
         '--interval-seconds N' => 'Steady sample interval in seconds (default: 10; adaptive starts at 5)',
+        '--artifact PATH' => 'JSON receipt output path',
+        '--log PATH' => 'Sample log output path',
+        '--fd-peak-max N' => 'Maximum file descriptor count for process-tree targets',
+        '--fd-growth-max N' => 'Maximum file descriptor growth for process-tree targets',
         '--dry-run' => 'Print the planned artifact path without sampling',
         '--no-exit' => 'Return the report without exiting non-zero',
         '--json' => 'Print machine-readable result JSON'
       },
       examples: [
         'resource_soak --adaptive',
-        'resource_soak --dry-run',
-        'resource_soak --json'
+        'resource_soak --target ios-simulator --bundle-id com.example.App --simulator-udid DEVICE-UDID',
+        'resource_soak --target browser-extension --session-receipt /tmp/private-brave-session.json',
+        'resource_soak --target command-tree --cwd /path/to/worker -- node server.mjs'
       ]
     },
     'customer_ui_sweep' => {

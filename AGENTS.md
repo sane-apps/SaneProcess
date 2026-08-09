@@ -148,7 +148,7 @@ the wrapper.
 | Setapp status | `ruby scripts/SaneMaster.rb setapp_status`; `Needs Revision` means waiting on us |
 | Setapp upload | `ruby scripts/SaneMaster.rb setapp_upload`; portal fallback must be followed by `setapp_status` / `In Review` proof |
 | Full release | `bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project $(pwd) --full ...` |
-| Website deploy | `release.sh --website-only` |
+| Website deploy | Use the project's documented deploy wrapper when present (for example `bash deploy.sh`); otherwise use shared `release.sh --website-only` |
 | Work email | `ruby scripts/SaneMaster.rb check_inbox` or `~/SaneApps/infra/scripts/check-inbox.sh` |
 | Sales/download/funnel | `sales`, `downloads`, `events` |
 | Tool discovery | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` |

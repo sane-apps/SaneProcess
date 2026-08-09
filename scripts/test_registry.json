@@ -983,6 +983,15 @@
         "ruby",
         "scripts/sanemaster/verify_doctor_identifier_test.rb"
       ]
+    },
+    {
+      "path": "scripts/sanemaster/resource_soak_targets_test.rb",
+      "label": "SaneProcess resource soak target ownership tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/resource_soak_targets_test.rb"
+      ]
     }
   ]
 }

@@ -357,7 +357,7 @@ module ReleaseReceiptSigner
   def ed25519_private_key(seed)
     raise ArgumentError, 'Ed25519 seed must be exactly 32 bytes' unless seed.to_s.bytesize == 32
 
-    algorithm = OpenSSL::ASN1::Sequence([OpenSSL::ASN1::ObjectId('ED25519')])
+    algorithm = OpenSSL::ASN1::Sequence([OpenSSL::ASN1::ObjectId('1.3.101.112')])
     wrapped_seed = OpenSSL::ASN1::OctetString(seed).to_der
     private_key_info = OpenSSL::ASN1::Sequence([
       OpenSSL::ASN1::Integer(0),
