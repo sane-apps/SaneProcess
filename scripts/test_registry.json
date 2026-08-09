@@ -721,6 +721,15 @@
       ]
     },
     {
+      "path": "scripts/sanemaster/appstore_storefront_receipts_test.rb",
+      "label": "SaneProcess App Store storefront receipt binding tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/appstore_storefront_receipts_test.rb"
+      ]
+    },
+    {
       "path": "scripts/sanemaster/release_guardrail_test.rb",
       "label": "SaneProcess release guardrail tests",
       "status": "required",

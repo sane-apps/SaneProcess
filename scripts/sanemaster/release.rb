@@ -17,11 +17,13 @@ require 'socket'
 require 'pathname'
 require_relative 'upgrade_path_proof'
 require_relative 'source_fingerprint'
+require_relative 'appstore_storefront_receipts'
 
 module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
   module Release
     include SaneMasterModules::UpgradePathProof
+    include SaneMasterModules::AppStoreStorefrontReceipts
     ENV_CACHE_FILE = File.expand_path(ENV.fetch('SANE_ENV_CACHE_FILE', '~/.config/nv/env'))
     DEFAULT_LAUNCH_READY_MAX_PREFLIGHT_AGE_DAYS = 7
     UNTRACKED_SWIFT_MAX_BYTES = 2 * 1024 * 1024
@@ -5844,6 +5846,22 @@ module SaneMasterModules
         else
           puts "❌ #{screenshot_issues.first}"
           screenshot_issues.each { |si| issues << si }
+        end
+      end
+
+      if platforms.include?('ios') && !screenshots_config.empty?
+        print '  │ Storefront screenshot receipts... '
+        storefront_report = appstore_storefront_receipt_report(
+          root: Dir.pwd,
+          screenshots_config: screenshots_config,
+          source_identity: source_identity,
+          ios_supports_ipad: ios_supports_ipad
+        )
+        if storefront_report[:ok]
+          puts "✅ #{storefront_report[:family_count]} device family receipt(s)"
+        else
+          puts "❌ #{storefront_report[:issues].first}"
+          storefront_report[:issues].each { |message| issues << message }
         end
       end
 
