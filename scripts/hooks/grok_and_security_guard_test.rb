@@ -502,7 +502,7 @@ Dir.mktmpdir('release-guard-app-') do |project_dir|
   t('Release guard blocks generic altool upload in SaneApps repo', altool_generic_status.exitstatus == 2)
   t('Generic altool block names manual App Store upload', altool_generic_err.include?('Manual App Store upload'))
 
-  # Intelligent TestFlight allow: artifacts IPA + fresh verify proof.
+  # A recent unrelated verify receipt is not exact TestFlight package proof.
   verify_fixture = File.join(project_dir, 'outputs', 'verify', "hook-tf-#{Process.pid}")
   FileUtils.mkdir_p(verify_fixture)
   File.write(File.join(verify_fixture, 'receipt.json'), '{"ok":true}')
@@ -516,8 +516,8 @@ Dir.mktmpdir('release-guard-app-') do |project_dir|
         }
       }
     )
-    t('Release guard allows TestFlight artifact altool upload with verify proof', altool_tf_status.exitstatus == 0)
-    t('TestFlight altool allow mentions artifacts lane', altool_tf_err.include?('TestFlight artifact upload'))
+    t('Release guard blocks TestFlight artifact altool upload with only verify proof', altool_tf_status.exitstatus == 2)
+    t('TestFlight block requires exact adjacent proof', altool_tf_err.include?('exact adjacent mode-0600 proof'))
 
     _, altool_var_err, altool_var_status = run_ruby_hook(
       'sane_release_guard.rb',
@@ -528,7 +528,7 @@ Dir.mktmpdir('release-guard-app-') do |project_dir|
         }
       }
     )
-    t('Release guard resolves $ART paths for TestFlight altool uploads', altool_var_status.exitstatus == 0)
+    t('Release guard resolves but blocks $ART path without exact proof', altool_var_status.exitstatus == 2)
 
     _, altool_inline_err, altool_inline_status = run_ruby_hook(
       'sane_release_guard.rb',
@@ -539,12 +539,12 @@ Dir.mktmpdir('release-guard-app-') do |project_dir|
         }
       }
     )
-    t('Release guard resolves inline ART=… && altool paths', altool_inline_status.exitstatus == 0)
+    t('Release guard resolves but blocks inline ART path without exact proof', altool_inline_status.exitstatus == 2)
   ensure
     FileUtils.rm_rf(verify_fixture)
   end
 
-  # Isolate "no verify" by pointing cd at a temp .saneprocess tree without outputs/verify.
+  # Isolate "no proof" in a separate .saneprocess tree.
   bare_tf_dir = Dir.mktmpdir('sane-tf-guard')
   begin
     File.write(File.join(bare_tf_dir, '.saneprocess'), "name: TempTF\ntype: ios_app\n")
@@ -557,8 +557,8 @@ Dir.mktmpdir('release-guard-app-') do |project_dir|
         }
       }
     )
-    t('Release guard blocks TF altool without recent verify proof', altool_stale_status.exitstatus == 2)
-    t('TF-without-verify block still points at verify → artifacts lane', altool_stale_err.include?('outputs/artifacts'))
+    t('Release guard blocks TF altool without exact artifact proof', altool_stale_status.exitstatus == 2)
+    t('TF-without-proof block points at canonical proof producer', altool_stale_err.include?('SaneProcess/scripts/testflight_artifact_proof.rb'))
   ensure
     FileUtils.rm_rf(bare_tf_dir)
   end
