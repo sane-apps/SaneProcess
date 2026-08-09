@@ -7,6 +7,18 @@ Repo: `~/SaneApps/infra/SaneProcess`
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
 
+## 2026-08-08 Mini Brave web-capture correction
+
+- The canonical web screenshot wrapper now launches the installed Mini Brave
+  executable through Playwright instead of downloading or using cached Chromium.
+  It accepts named `desktop` (1440x1000) and `375` (375x900) viewports and binds
+  the chosen label and dimensions into each filename and receipt.
+- Full-page capture primes lazy-loaded images with a bounded scroll, returns to
+  the top, and records the final PNG SHA-256 and byte count in the receipt.
+- Focused Mini proof is green: wrapper source/syntax checks and viewport behavior
+  pass 35/35. Four SaneLot pricing captures then completed through the corrected
+  route. No preview server, headless Brave, or capture process remains.
+
 ## 2026-07-30 Launcher path and secret hardening
 
 - End-session security review found that canonical app path overrides were not

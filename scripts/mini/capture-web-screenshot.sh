@@ -179,6 +179,26 @@ const [url, outputPath, widthText, heightText] = process.argv.slice(2);
     });
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(4000);
+    await page.evaluate(async () => {
+      const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+      const maxScrollSteps = 100;
+      for (let step = 0; step < maxScrollSteps; step += 1) {
+        const bottom = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        const next = Math.min(bottom, step * Math.max(400, Math.floor(window.innerHeight * 0.75)));
+        window.scrollTo(0, next);
+        await wait(80);
+        if (next >= bottom) break;
+      }
+      await Promise.race([
+        Promise.all(Array.from(document.images, (image) => image.complete ? true : new Promise((resolve) => {
+          image.addEventListener("load", resolve, { once: true });
+          image.addEventListener("error", resolve, { once: true });
+        }))),
+        wait(5000)
+      ]);
+      window.scrollTo(0, 0);
+    });
+    await page.waitForTimeout(500);
     await page.screenshot({ path: outputPath, fullPage: true });
   } finally {
     await browser.close();
@@ -211,6 +231,8 @@ fi
 echo "→ Copying screenshot back to ${OUT_DIR}/${PNG_NAME}..."
 scp "${MINI_HOST}:${REMOTE_PNG}" "${OUT_DIR}/${PNG_NAME}"
 ssh "$MINI_HOST" "rm -f ${remote_png}" >/dev/null 2>&1 || true
+PNG_SHA256="$(shasum -a 256 "${OUT_DIR}/${PNG_NAME}" | awk '{print $1}')"
+PNG_BYTES="$(wc -c < "${OUT_DIR}/${PNG_NAME}" | tr -d ' ')"
 
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 RECEIPT="${OUT_DIR}/customer_ui_action_receipt.json"
@@ -229,11 +251,11 @@ ruby -rjson -e '
       git_status_sha256: source.fetch("status_sha256"), manifest_file_count: source.fetch("file_count"),
       manifest_sha256: source.fetch("manifest_sha256"), air_mini_parity: true
     },
-    screenshots: [{path: ARGV.fetch(10), view: "#{ARGV.fetch(5)} full page at #{ARGV.fetch(6)} #{ARGV.fetch(7)}x#{ARGV.fetch(8)}", result: "TODO: describe what you SEE rendering correctly", inspected: false}],
+    screenshots: [{path: ARGV.fetch(10), sha256: ARGV.fetch(11), bytes: Integer(ARGV.fetch(12)), view: "#{ARGV.fetch(5)} full page at #{ARGV.fetch(6)} #{ARGV.fetch(7)}x#{ARGV.fetch(8)}", result: "TODO: describe what you SEE rendering correctly", inspected: false}],
     notes: "Scaffold from capture-web-screenshot.sh. OPEN the PNG, confirm the change renders, then set inspected:true (top-level + screenshot) and fill in result. Do NOT fabricate."
   }
   puts JSON.pretty_generate(receipt)
-' "$LOCAL_SOURCE_POST" "$MINI_HOST" "$APP" "$VER" "$NOW_ISO" "$URL" "$VIEWPORT_LABEL" "$VIEWPORT_WIDTH" "$VIEWPORT_HEIGHT" "$REMOTE_SOURCE_ROOT" "$PNG_NAME" > "$RECEIPT"
+' "$LOCAL_SOURCE_POST" "$MINI_HOST" "$APP" "$VER" "$NOW_ISO" "$URL" "$VIEWPORT_LABEL" "$VIEWPORT_WIDTH" "$VIEWPORT_HEIGHT" "$REMOTE_SOURCE_ROOT" "$PNG_NAME" "$PNG_SHA256" "$PNG_BYTES" > "$RECEIPT"
 
 echo ""
 echo "✅ Screenshot: ${OUT_DIR}/${PNG_NAME}"

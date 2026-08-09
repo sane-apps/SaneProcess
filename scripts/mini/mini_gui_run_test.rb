@@ -467,9 +467,10 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(web_screenshot_wrapper_source, 'executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"')
       assert_includes(web_screenshot_wrapper_source, 'NODE_PATH=${PLAYWRIGHT_NODE_PATH} node -')
       assert_includes(web_screenshot_wrapper_source, 'captured_with: "Playwright headless Brave on the Mini')
-      %w[git_head git_branch git_dirty manifest_sha256 LOCAL_SOURCE_PRE LOCAL_SOURCE_POST REMOTE_SOURCE_PRE REMOTE_SOURCE_POST].each do |token|
+      %w[git_head git_branch git_dirty manifest_sha256 LOCAL_SOURCE_PRE LOCAL_SOURCE_POST REMOTE_SOURCE_PRE REMOTE_SOURCE_POST maxScrollSteps document.images PNG_SHA256 PNG_BYTES].each do |token|
         assert_includes(web_screenshot_wrapper_source, token)
       end
+      assert_includes(web_screenshot_wrapper_source, 'window.scrollTo(0, 0)')
       assert_includes(web_screenshot_wrapper_source, '--source-root is required')
       assert_includes(web_screenshot_wrapper_source, 'output directory must stay inside')
       assert(!web_screenshot_wrapper_source.include?('playwright install chromium'),
