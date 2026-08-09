@@ -244,7 +244,7 @@ class SaneMaster
         'restore' => { args: '', desc: 'Fix Xcode/Launch Services issues' },
         'install_provisioning_profiles' => { args: '[--delete-source] [glob ...]', desc: 'Install downloaded provisioning profiles deterministically by UUID' },
         'dedupe_apps' => { args: '[--host local|mini] [--apps App1,App2] [--dry-run] [--json]', desc: 'Keep one canonical app bundle per Sane app' },
-        'machine_cleanup' => { args: '[--host local|mini] [--server] [--apply] [--json] [--preserve-apps A,B]', desc: 'Prune disposable caches and generated build/test artifacts without touching active app work' },
+        'machine_cleanup' => { args: '[--host local|mini] [--server] [--apply] [--empty-trash] [--json] [--preserve-apps A,B]', desc: 'Prune disposable caches and generated build/test artifacts without touching active app work' },
         'mcp_watchdog' => { args: '[status|doctor|clean|install|uninstall] [--max N] [--interval SEC] [--json] [--quiet]', desc: 'Detect and clean duplicate MCP daemons' },
         'universal_control_reset' => { args: '[--status] [--dry-run] [--local-only|--mini-only] [--cleanup-mini] [--reboot-mini]', desc: 'Recover Air↔Mini Universal Control / pointer handoff' },
         'work_session_on' => { args: '', desc: 'Start keep-awake + no-lock work session guard' },
@@ -2722,12 +2722,13 @@ PY
       ]
     },
     'machine_cleanup' => {
-      usage: 'machine_cleanup [--host local|mini] [--server] [--apply] [--json] [--preserve-apps A,B]',
-      description: 'Prune disposable caches, full Trash, simulators, stale DerivedData, and optional Mini server generated artifacts.',
+      usage: 'machine_cleanup [--host local|mini] [--server] [--apply] [--empty-trash] [--json] [--preserve-apps A,B]',
+      description: 'Prune disposable caches, stale generated evidence, simulators, DerivedData, and optional Mini server artifacts; Trash stays recoverable by default.',
       flags: {
         '--host local|mini' => 'Inspect this machine or route the cleanup command to the Mini',
         '--server' => 'Mini-only aggressive server reset: prune generated repo artifacts, routed workspaces, simulator runtimes, Codex residue, bulk outputs, and disposable app containers',
         '--apply' => 'Perform the planned safe cleanup; default is dry-run',
+        '--empty-trash' => 'Permanently empty Trash after reversible cleanup; explicit approval only',
         '--preserve-apps A,B' => 'Additional app names to preserve even if no process is currently visible',
         '--min-free-gb N' => 'Disk pressure threshold used in the report',
         '--cache-threshold-gb N' => 'Minimum disposable-cache total before cache pruning is planned',

@@ -257,9 +257,9 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
         categories = plan[:actions].map { |action| action[:category] }
         assert(!paths.include?(downloads), 'routine server cleanup must preserve Downloads')
         assert(!paths.include?(process_outputs), 'SaneProcess receipts and dirty-work snapshots must survive cleanup')
-        assert_includes(paths, repo_build)
+        assert(!paths.include?(repo_build), 'explicitly preserved app build artifacts must survive server cleanup')
         assert(!paths.include?(repo_outputs), 'expected generic app outputs to be preserved for QA evidence')
-        assert_includes(paths, sanevideo_outputs)
+        assert(!paths.include?(sanevideo_outputs), 'whole app output roots must use bounded evidence retention')
         assert_includes(paths, nested_package_build)
         assert_includes(paths, release_work)
         assert(!paths.include?(codex_sessions), 'live Codex session state must survive cleanup')
@@ -269,7 +269,7 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
         assert_includes(paths, scratch)
         assert(!paths.include?(codex_runs), 'Codex run evidence must survive cleanup')
         assert_includes(paths, xcodebuildmcp_workspaces)
-        assert_includes(paths, derived_data)
+        assert(!paths.include?(derived_data), 'explicitly preserved app DerivedData must survive server cleanup')
         assert_includes(categories, 'server_simulator_delete')
         assert_includes(categories, 'server_simulator_runtime_delete')
       end

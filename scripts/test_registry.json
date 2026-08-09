@@ -640,6 +640,24 @@
       ]
     },
     {
+      "path": "scripts/sanemaster/machine_cleanup_process_test.rb",
+      "label": "SaneProcess machine cleanup process ownership tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/machine_cleanup_process_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/sanemaster/machine_cleanup_retention_test.rb",
+      "label": "SaneProcess machine cleanup retention tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/machine_cleanup_retention_test.rb"
+      ]
+    },
+    {
       "path": "scripts/sanemaster/meta_test.rb",
       "label": "SaneProcess meta health tests",
       "status": "required",
