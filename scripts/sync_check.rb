@@ -21,6 +21,7 @@
 require 'digest'
 require 'fileutils'
 require 'json'
+require_relative 'project_links'
 
 class SyncCheck
   SANEPROCESS_ROOT = File.expand_path('..', __dir__)
@@ -35,8 +36,7 @@ class SyncCheck
   # Config templates that should be synced to all projects
   SYNC_CONFIGS = {
     '.swiftlint.yml' => File.join(SANEPROCESS_ROOT, 'templates', 'swiftlint.yml'),
-    '.gitignore' => File.join(SANEPROCESS_ROOT, 'templates', 'gitignore'),
-    'lefthook.yml' => File.join(SANEPROCESS_ROOT, 'templates', 'lefthook.yml')
+    '.gitignore' => File.join(SANEPROCESS_ROOT, 'templates', 'gitignore')
   }.freeze
 
   # Governance files that should be identical across all projects
@@ -155,7 +155,7 @@ class SyncCheck
       if @fix_mode
         fix_diffs
       else
-        puts "Run 'ruby scripts/sync_check.rb --fix' to copy from SaneProcess to projects"
+        puts "Run 'ruby scripts/sync_check.rb --fix' to restore shared project configuration"
       end
       exit 1
     end
@@ -240,6 +240,11 @@ class SyncCheck
           # C6 FIX: Handle settings.json sync
           src = SETTINGS_TEMPLATE
           dst = File.join(project_path, '.claude', 'settings.json')
+        elsif diff[:file] == 'lefthook.yml'
+          SaneProjectLinks.install_lefthook(project_path)
+          puts "  ✅ Linked lefthook.yml in #{diff[:project]}"
+          fixed += 1
+          next
         elsif SYNC_CONFIGS.key?(diff[:file])
           src = SYNC_CONFIGS[diff[:file]]
           dst = File.join(project_path, diff[:file])
@@ -581,6 +586,16 @@ class SyncCheck
         reason: "#{dest_name} differs from SaneProcess template"
       }
     end
+
+    issue = SaneProjectLinks.lefthook_issue(project_path)
+    return unless issue
+
+    @diffs << {
+      project: project_name,
+      file: 'lefthook.yml',
+      status: File.exist?(File.join(project_path, 'lefthook.yml')) ? '⚠️  DIFFERS' : '❌ MISSING',
+      reason: issue
+    }
   end
 
   def check_governance(project_path)

@@ -27,7 +27,7 @@
 #   ├── .gitignore              (from template)
 #   ├── .swiftlint.yml          (from template)
 #   ├── .saneprocess            (generated)
-#   ├── lefthook.yml            (from template)
+#   ├── lefthook.yml            (relative link to shared template)
 #   ├── Gemfile                 (standard)
 #   ├── AGENTS.md               (shared agent source of truth)
 #   ├── CLAUDE.md               (stub)
@@ -44,11 +44,14 @@
 require 'fileutils'
 require 'yaml'
 require 'date'
+require_relative 'project_links'
 
 SANEPROCESS_ROOT = File.expand_path('..', __dir__)
 TEMPLATES_DIR = File.join(SANEPROCESS_ROOT, 'templates')
 GOVERNANCE_DIR = File.join(File.dirname(File.dirname(SANEPROCESS_ROOT)), 'meta', 'governance')
-APPS_DIR = File.join(File.dirname(File.dirname(SANEPROCESS_ROOT)), 'apps')
+APPS_DIR = ENV.fetch('SANEAPPS_SCAFFOLD_APPS_DIR') do
+  File.join(File.dirname(File.dirname(SANEPROCESS_ROOT)), 'apps')
+end
 
 def main
   if ARGV.empty? || ARGV[0] == '--help'
@@ -94,7 +97,7 @@ def main
   # Copy templates
   copy_template('.swiftlint.yml', 'swiftlint.yml', project_dir)
   copy_template('.gitignore', 'gitignore', project_dir)
-  copy_template('lefthook.yml', 'lefthook.yml', project_dir)
+  SaneProjectLinks.install_lefthook(project_dir)
 
   # Copy scripts
   scripts_template = File.join(TEMPLATES_DIR, 'scripts', 'generate_download_link.rb')
@@ -432,4 +435,4 @@ def generate_stub(project_dir, filename, content)
   File.write(File.join(project_dir, filename), content)
 end
 
-main
+main if __FILE__ == $PROGRAM_NAME
