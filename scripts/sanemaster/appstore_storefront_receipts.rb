@@ -66,6 +66,7 @@ module SaneMasterModules
       issues << "#{prefix} is not bound to its pushed upstream commit" unless
         receipt['git_pushed'] == true && receipt['git_upstream_commit'].to_s == commit
       issues << "#{prefix} reports dirty source" unless receipt['git_dirty'] == false
+      issues.concat(storefront_resource_proof_issues(root: root, receipt: receipt, prefix: prefix)) if family == 'iphone'
 
       evidence, evidence_issues = storefront_image_evidence(receipt, prefix)
       issues.concat(evidence_issues)
@@ -171,6 +172,9 @@ module SaneMasterModules
       issues << 'ipad aggregate receipt is not bound to its pushed upstream commit' unless
         receipt['git_pushed'] == true && receipt['git_upstream_commit'].to_s == commit
       issues << 'ipad aggregate receipt reports dirty source' unless receipt['git_dirty'] == false
+      issues.concat(storefront_resource_proof_issues(
+        root: root, receipt: receipt, prefix: 'ipad aggregate receipt'
+      ))
       state_count = receipt['state_count']
       states = receipt['states']
       issues << 'ipad aggregate receipt state inventory is invalid' unless
@@ -199,6 +203,72 @@ module SaneMasterModules
       ["ipad visual evidence is not valid JSON: #{error.message}"]
     rescue StandardError => error
       ["ipad visual evidence could not be verified: #{error.message}"]
+    end
+
+    def storefront_resource_proof_issues(root:, receipt:, prefix:)
+      proof = receipt['resource_proof']
+      return ["#{prefix} resource proof is missing"] unless proof.is_a?(Hash)
+
+      artifact_path = proof['artifact_path'].to_s
+      log_path = proof['log_path'].to_s
+      issues = []
+      issues.concat(safe_storefront_file_issues(root, artifact_path, "#{prefix} resource artifact", require_private: true))
+      issues.concat(safe_storefront_file_issues(root, log_path, "#{prefix} resource log", require_private: true))
+      return issues unless issues.empty?
+
+      artifact_raw, artifact_stat = storefront_private_bound_read(root, artifact_path)
+      log_raw, log_stat = storefront_private_bound_read(root, log_path)
+      artifact = JSON.parse(artifact_raw)
+      target = artifact['target'].is_a?(Hash) ? artifact['target'] : {}
+      candidate = artifact['candidate'].is_a?(Hash) ? artifact['candidate'] : {}
+      source = target['source_binding'].is_a?(Hash) ? target['source_binding'] : {}
+      exact = [
+        proof['status'] == 'pass', proof['target'] == 'ios-simulator',
+        proof['bundle_id'].to_s.match?(/\A[A-Za-z0-9.-]+\z/),
+        proof['simulator_udid'].to_s.match?(/\A[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\z/),
+        proof['bundle_id'].to_s == receipt['app_bundle_id'].to_s,
+        proof['simulator_udid'].to_s == receipt['simulator_udid'].to_s,
+        proof['source_project'].to_s == File.basename(File.realpath(root)),
+        proof['source_fingerprint'].to_s.match?(/\A[0-9a-f]{64}\z/),
+        artifact['status'] == 'pass', artifact['schema_version'] == 2,
+        artifact['sample_count'].is_a?(Integer) && artifact['sample_count'].positive?,
+        artifact['sample_count'] == artifact['physical_sample_count'],
+        artifact['missing_sample_count'].to_i.zero?, Array(artifact['issues']).empty?,
+        target['kind'] == 'ios-simulator', target['ownership'] == 'attached',
+        target.dig('timeout', 'reached') == true,
+        target.dig('cleanup', 'result') == 'not_owned',
+        candidate['bundle_id'].to_s == proof['bundle_id'].to_s,
+        candidate['simulator_udid'].to_s == proof['simulator_udid'].to_s,
+        source['fingerprint'].to_s == proof['source_fingerprint'].to_s,
+        source['project'].to_s == proof['source_project'].to_s,
+        proof['sample_count'] == artifact['sample_count'],
+        proof['artifact_sha256'].to_s == Digest::SHA256.hexdigest(artifact_raw),
+        proof['artifact_device'] == artifact_stat.dev, proof['artifact_inode'] == artifact_stat.ino,
+        proof['log_sha256'].to_s == Digest::SHA256.hexdigest(log_raw),
+        proof['log_device'] == log_stat.dev, proof['log_inode'] == log_stat.ino
+      ]
+      issues << "#{prefix} resource proof is stale, incomplete, or changed" unless exact.all?
+      issues
+    rescue JSON::ParserError => error
+      ["#{prefix} resource artifact is not valid JSON: #{error.message}"]
+    rescue StandardError => error
+      ["#{prefix} resource proof could not be verified: #{error.message}"]
+    end
+
+    def storefront_private_bound_read(root, path)
+      _real_root, expanded, = storefront_bound_path(root, path)
+      expected = File.lstat(expanded)
+      raise 'private evidence must be owned 0600 with one link' unless
+        expected.file? && !expected.symlink? && expected.uid == Process.uid &&
+        expected.nlink == 1 && (expected.mode & 0o777) == 0o600
+      flags = File::RDONLY | (File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0)
+      raw = File.open(expanded, flags) do |file|
+        opened = file.stat
+        raise 'private evidence changed while reading' unless
+          opened.dev == expected.dev && opened.ino == expected.ino
+        file.read
+      end
+      [raw, expected]
     end
 
     def storefront_relative_path(root, path)

@@ -12,6 +12,39 @@ class StorefrontReceiptHarness
   include SaneMasterModules::AppStoreStorefrontReceipts
 end
 
+def resource_fixture(root, family)
+  directory = File.join(root, 'outputs', 'app-review-current-source', "#{family}-resource")
+  FileUtils.mkdir_p(directory)
+  artifact_path = File.join(directory, 'resource-soak.json')
+  log_path = File.join(directory, 'resource-soak.log')
+  bundle = 'com.sanelot.app'
+  udid = family == 'iphone' ? 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE' : '11111111-2222-3333-4444-555555555555'
+  fingerprint = 'e' * 64
+  artifact = {
+    'status' => 'pass', 'schema_version' => 2, 'sample_count' => 3,
+    'physical_sample_count' => 3, 'missing_sample_count' => 0, 'issues' => [],
+    'candidate' => { 'bundle_id' => bundle, 'simulator_udid' => udid },
+    'target' => {
+      'kind' => 'ios-simulator', 'ownership' => 'attached',
+      'source_binding' => { 'project' => File.basename(root), 'fingerprint' => fingerprint },
+      'cleanup' => { 'result' => 'not_owned' }, 'timeout' => { 'reached' => true }
+    }
+  }
+  File.write(artifact_path, JSON.generate(artifact), mode: 'wx', perm: 0o600)
+  File.write(log_path, "resource pass\n", mode: 'wx', perm: 0o600)
+  artifact_stat = File.stat(artifact_path)
+  log_stat = File.stat(log_path)
+  [{
+    'status' => 'pass', 'target' => 'ios-simulator', 'bundle_id' => bundle,
+    'simulator_udid' => udid, 'source_project' => File.basename(root),
+    'source_fingerprint' => fingerprint, 'sample_count' => 3,
+    'artifact_path' => artifact_path, 'artifact_sha256' => Digest::SHA256.file(artifact_path).hexdigest,
+    'artifact_device' => artifact_stat.dev, 'artifact_inode' => artifact_stat.ino,
+    'log_path' => log_path, 'log_sha256' => Digest::SHA256.file(log_path).hexdigest,
+    'log_device' => log_stat.dev, 'log_inode' => log_stat.ino
+  }, artifact_path]
+end
+
 def storefront_fixture(root, family:, commit:, branch: 'release/test', bind_images: true, relative_path: false,
                        evidence_key: 'states')
   directory = File.join(root, 'outputs', 'app-review-current-source', "storefront-#{family}")
@@ -28,6 +61,11 @@ def storefront_fixture(root, family:, commit:, branch: 'release/test', bind_imag
     'git_dirty' => false,
     evidence_key => []
   }
+  if family == 'iphone'
+    receipt['resource_proof'], = resource_fixture(root, family)
+    receipt['app_bundle_id'] = receipt['resource_proof']['bundle_id']
+    receipt['simulator_udid'] = receipt['resource_proof']['simulator_udid']
+  end
   receipt['schema'] = 'sanelot.app_store_ipad_selection.v1' if evidence_key == 'entries'
   if bind_images
     receipt[evidence_key] << {
@@ -47,10 +85,14 @@ def ipad_visual_fixture(root, commit:, branch:)
   directory = File.join(root, 'outputs', 'app-review-current-source')
   FileUtils.mkdir_p(directory)
   receipt_path = File.join(directory, 'ipad-release-receipt.json')
+  resource_proof, = resource_fixture(root, 'ipad')
   receipt = {
     'status' => 'passed', 'git_commit' => commit, 'git_branch' => branch,
     'git_upstream_commit' => commit, 'git_pushed' => true, 'git_dirty' => false,
     'state_count' => 1, 'states' => [{ 'path' => 'state.png' }],
+    'app_bundle_id' => resource_proof.fetch('bundle_id'),
+    'simulator_udid' => resource_proof.fetch('simulator_udid'),
+    'resource_proof' => resource_proof,
     'source_manifest_sha256' => 'd' * 64
   }
   File.write(receipt_path, JSON.pretty_generate(receipt))
@@ -202,6 +244,24 @@ exit(run_tests('App Store source-bound storefront receipts') do
         source_identity: identity, ios_supports_ipad: true
       )
       assert_includes(report[:issues].join("\n"), 'iphone storefront receipt path contains a symlink')
+    end
+    true
+  end
+
+  test('rejects same-byte replacement of a bound resource artifact') do
+    Dir.mktmpdir('storefront-resource-replaced-') do |root|
+      _image, iphone_receipt = storefront_fixture(root, family: 'iphone', commit: identity[:commit])
+      storefront_fixture(root, family: 'ipad', commit: identity[:commit])
+      receipt = JSON.parse(File.read(iphone_receipt))
+      artifact_path = receipt.dig('resource_proof', 'artifact_path')
+      bytes = File.binread(artifact_path)
+      File.unlink(artifact_path)
+      File.write(artifact_path, bytes, mode: 'wx', perm: 0o600)
+      report = subject.appstore_storefront_receipt_report(
+        root: root, screenshots_config: config,
+        source_identity: identity, ios_supports_ipad: true
+      )
+      assert_includes(report[:issues].join("\n"), 'resource proof is stale, incomplete, or changed')
     end
     true
   end
