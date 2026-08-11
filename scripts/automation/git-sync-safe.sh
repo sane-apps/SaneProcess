@@ -23,10 +23,16 @@ HOST_TAG=$(hostname -s 2>/dev/null || hostname)
 HOST_TAG=$(printf '%s' "$HOST_TAG" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9._-')
 PEER_HOME=""
 SNAPSHOT_ROOT="$OUT_DIR/dirty-work-snapshots"
+CUSTODY_ROOT="$OUT_DIR/source-custody"
+CUSTODY_HELPER="$(cd "$(dirname "$0")" && pwd)/source_custody.rb"
+CUSTODY_PATHS=()
+CUSTODY_MANIFEST_SYMLINKS=()
 
 usage() {
   cat <<'USAGE'
 Usage: git-sync-safe.sh [--peer <host>] [--allow-dirty] [--reconcile-dirty] [--snapshot-only]
+                        [--custody-path <path> ...]
+                        [--custody-manifest-symlink <source-relative-path> ...]
 
 Options:
   --peer <host>         Compare each repo against a peer machine over SSH.
@@ -36,6 +42,14 @@ Options:
                         SANEPROCESS_ALLOW_AUTO_STASH=1 is set explicitly.
   --snapshot-only       Preserve dirty patches/untracked files without fetch,
                         pull, push, stash, commit, or worktree mutation.
+  --custody-path <path> Create a complete, secret-filtered, restore-verified
+                        source custody receipt for a declared path under
+                        ~/SaneApps. Repeat for nested Git or non-Git sources.
+                        This focused mode performs no fetch, pull, push, stash,
+                        commit, checkout, or product worktree mutation.
+  --custody-manifest-symlink <source-relative-path>
+                        Record an exact external link for one custody source.
+                        Repeat as needed; link and target are never archived.
 USAGE
 }
 
@@ -243,6 +257,18 @@ while [[ $# -gt 0 ]]; do
       SNAPSHOT_ONLY=1
       shift
       ;;
+    --custody-path)
+      [[ $# -ge 2 ]] || { echo "ERROR: --custody-path requires a path" >&2; exit 2; }
+      CUSTODY_PATHS[${#CUSTODY_PATHS[@]}]="$2"
+      SNAPSHOT_ONLY=1
+      shift 2
+      ;;
+    --custody-manifest-symlink)
+      [[ $# -ge 2 ]] || { echo "ERROR: --custody-manifest-symlink needs a source-relative path" >&2; exit 2; }
+      CUSTODY_MANIFEST_SYMLINKS[${#CUSTODY_MANIFEST_SYMLINKS[@]}]="$2"
+      SNAPSHOT_ONLY=1
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -256,6 +282,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$OUT_DIR"
+
+if [[ ${#CUSTODY_MANIFEST_SYMLINKS[@]} -gt 0 && ${#CUSTODY_PATHS[@]} -ne 1 ]]; then
+  echo "ERROR: --custody-manifest-symlink requires exactly one --custody-path source" >&2
+  exit 2
+fi
 
 if [[ "$RECONCILE_DIRTY" -eq 1 && "${SANEPROCESS_ALLOW_AUTO_STASH:-0}" != "1" ]]; then
   log "ERROR: --reconcile-dirty no longer auto-stashes canonical repos by default."
@@ -276,6 +307,37 @@ fi
   echo "Reconcile dirty: $RECONCILE_DIRTY"
   echo "================================================================"
 } >> "$LOG_FILE"
+
+if [[ ${#CUSTODY_PATHS[@]} -gt 0 ]]; then
+  if [[ ! -f "$CUSTODY_HELPER" ]]; then
+    log "ERROR: source custody helper missing: $CUSTODY_HELPER"
+    exit 2
+  fi
+
+  custody_issues=0
+  for custody_path in "${CUSTODY_PATHS[@]}"; do
+    log ""
+    log "[source-custody] $custody_path"
+    custody_args=(--root "$ROOT" --source "$custody_path" --output-root "$CUSTODY_ROOT" --run-tag "$RUN_TAG" --host "$HOST_TAG")
+    for manifest_symlink in ${CUSTODY_MANIFEST_SYMLINKS[@]+"${CUSTODY_MANIFEST_SYMLINKS[@]}"}; do
+      custody_args[${#custody_args[@]}]="--custody-manifest-symlink"
+      custody_args[${#custody_args[@]}]="$manifest_symlink"
+    done
+    if custody_output=$(ruby "$CUSTODY_HELPER" "${custody_args[@]}" 2>&1); then
+      log "$custody_output"
+    else
+      log "$custody_output"
+      custody_issues=$((custody_issues + 1))
+    fi
+  done
+
+  if [[ "$custody_issues" -gt 0 ]]; then
+    log "Source custody finished with $custody_issues error item(s)."
+    exit 1
+  fi
+  log "Source custody finished clean."
+  exit 0
+fi
 
 collect_repos
 

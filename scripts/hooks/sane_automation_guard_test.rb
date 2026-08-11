@@ -14,27 +14,25 @@ HOOK_DIR = File.expand_path(__dir__)
 INSTALLER = File.expand_path('../automation/codex-automation-mini.rb', __dir__)
 GUARD = File.join(HOOK_DIR, 'sane_automation_guard.rb')
 
-def valid_cron(overrides = {})
-  {
-    'version' => 1, 'id' => 'test-cron', 'kind' => 'cron', 'name' => 'Test Cron',
-    'prompt' => 'Say "hi" — with\nnewline', 'status' => 'ACTIVE',
-    'rrule' => 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0', 'model' => 'default',
-    'reasoning_effort' => 'medium', 'execution_environment' => 'local',
-    'cwds' => ['/Users/stephansmac/SaneApps/infra/SaneProcess']
-  }.merge(overrides)
-end
-
 VALID_THREAD_ID = '019f0f84-f36c-7d20-befe-ec52c0cbc553'
 
 def valid_heartbeat(overrides = {})
-  valid_cron({
-    'kind' => 'heartbeat', 'target_thread_id' => VALID_THREAD_ID,
-    'model' => 'gpt-5.5', 'reasoning_effort' => 'medium'
-  }.merge(overrides))
+  {
+    'version' => 1, 'id' => 'test-heartbeat', 'kind' => 'heartbeat', 'name' => 'Test Heartbeat',
+    'prompt' => 'Say "hi" — with\nnewline', 'status' => 'ACTIVE',
+    'rrule' => 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0', 'model' => 'default',
+    'reasoning_effort' => 'medium', 'execution_environment' => 'local',
+    'cwds' => ['/Users/stephansmac/SaneApps/infra/SaneProcess'],
+    'target_thread_id' => VALID_THREAD_ID
+  }.merge(overrides)
+end
+
+def cron_spec(overrides = {})
+  valid_heartbeat({ 'kind' => 'cron', 'name' => 'Test Cron' }.merge(overrides))
 end
 
 def make_target_fixture(archived: 0, rollout_id: VALID_THREAD_ID, thread_id: VALID_THREAD_ID,
-                        rollout: true, model: 'gpt-5.5', effort: 'medium')
+                        rollout: true, model: 'default', effort: 'medium')
   root = Dir.mktmpdir
   cwd_root = File.join(root, 'Users', 'stephansmac', 'SaneApps')
   cwd = File.join(cwd_root, 'infra', 'SaneProcess')
@@ -89,47 +87,47 @@ end
 
 test_category('Model gate') do
 
-  # framework note: `expected: false` is swallowed by `tc[:expected] || tc[:expect]`,
-  # so truthy sentinels are used instead of booleans
-  parameterized_test('gpt version policy', [
+  # The thread is the model owner. These cases intentionally include older,
+  # future, and non-GPT labels to prove the automation guard does not become a
+  # stale monthly-model pin. Only a missing row value is invalid.
+  parameterized_test('thread-owned model presence policy', [
     { input: 'default', expected: 'ok' },
     { input: 'gpt-5.5', expected: 'ok' }, { input: 'gpt-5.5-codex', expected: 'ok' },
     { input: 'gpt-5.10', expected: 'ok' }, { input: 'gpt-6', expected: 'ok' },
     { input: 'gpt-10.2', expected: 'ok' },
-    { input: 'gpt-5', expected: 'no' }, { input: 'gpt-4.1', expected: 'no' },
-    { input: 'o3', expected: 'no' }, { input: '', expected: 'no' }, { input: nil, expected: 'no' }
+    { input: 'gpt-5', expected: 'ok' }, { input: 'gpt-4.1', expected: 'ok' },
+    { input: 'o3', expected: 'ok' }, { input: '', expected: 'no' }, { input: nil, expected: 'no' }
   ]) do |model, expected|
-    assert_eq(SaneAutomationGuard.gpt_version_ok?(model), expected == 'ok', "model=#{model.inspect}")
+    assert_eq(SaneAutomationGuard.thread_model_ok?(model), expected == 'ok', "model=#{model.inspect}")
   end
 end
 
 test_category('Automation validation') do
 
-  test('valid cron passes on Mini') do
-    v = SaneAutomationGuard.validate_automation(valid_cron, dir_id: 'test-cron', host_is_mini: true)
-    assert_eq(v, [])
+  test('cron is rejected by the heartbeat-only policy') do
+    v = SaneAutomationGuard.validate_automation(cron_spec('status' => 'PAUSED'),
+                                                 dir_id: 'test-heartbeat', host_is_mini: true)
+    assert(v.any? { |msg| msg.include?('heartbeat-only policy') && msg.include?('persistent Mini-local') })
   end
 
-  parameterized_test('cron policy violations', [
-    { input: { 'model' => 'gpt-5.6-terra' }, expected: /must be `default`/ },
-    { input: { 'reasoning_effort' => 'low' }, expected: /reasoning_effort/ },
-    { input: { 'cwds' => [] }, expected: /non-empty `cwds`/ },
-    { input: { 'cwds' => ['relative/path'] }, expected: /absolute path/ },
+  parameterized_test('heartbeat schema violations', [
     { input: { 'prompt' => '' }, expected: /missing required field `prompt`/ },
     { input: { 'status' => 'RUNNING' }, expected: /must be ACTIVE or PAUSED/ }
   ]) do |overrides, pattern|
-    v = SaneAutomationGuard.validate_automation(valid_cron(overrides), dir_id: 'test-cron', host_is_mini: true)
+    v = SaneAutomationGuard.validate_automation(valid_heartbeat({ 'status' => 'PAUSED' }.merge(overrides)),
+                                                 dir_id: 'test-heartbeat', host_is_mini: true)
     assert(v.any? { |msg| msg =~ pattern }, "expected #{pattern} in #{v.inspect}")
   end
 
   test('id must match directory name') do
-    v = SaneAutomationGuard.validate_automation(valid_cron, dir_id: 'other-dir', host_is_mini: true)
+    v = SaneAutomationGuard.validate_automation(valid_heartbeat('status' => 'PAUSED'),
+                                                 dir_id: 'other-dir', host_is_mini: true)
     assert(v.any? { |m| m.include?('does not match directory') })
   end
 
   test('initialized unarchived Mini-local heartbeat target passes') do
     root, resolver = make_target_fixture
-    assert_eq(SaneAutomationGuard.validate_automation(valid_heartbeat, dir_id: 'test-cron',
+    assert_eq(SaneAutomationGuard.validate_automation(valid_heartbeat, dir_id: 'test-heartbeat',
                                                        host_is_mini: true, target_resolver: resolver), [])
   ensure
     FileUtils.remove_entry(root) if root && File.exist?(root)
@@ -138,10 +136,10 @@ test_category('Automation validation') do
   test('PAUSED heartbeat may retain a missing target but cannot activate') do
     root, resolver = make_target_fixture
     paused = valid_heartbeat('status' => 'PAUSED', 'target_thread_id' => '')
-    assert_eq(SaneAutomationGuard.validate_automation(paused, dir_id: 'test-cron', host_is_mini: true,
+    assert_eq(SaneAutomationGuard.validate_automation(paused, dir_id: 'test-heartbeat', host_is_mini: true,
                                                       target_resolver: resolver), [])
     active = paused.merge('status' => 'ACTIVE')
-    violations = SaneAutomationGuard.validate_automation(active, dir_id: 'test-cron', host_is_mini: true,
+    violations = SaneAutomationGuard.validate_automation(active, dir_id: 'test-heartbeat', host_is_mini: true,
                                                           target_resolver: resolver)
     assert(violations.any? { |message| message.include?('canonical lowercase UUID') })
   ensure
@@ -149,9 +147,10 @@ test_category('Automation validation') do
   end
 
   test('ACTIVE automations violate on non-Mini hosts; PAUSED pass') do
-    v = SaneAutomationGuard.validate_automation(valid_cron, dir_id: 'test-cron', host_is_mini: false)
+    v = SaneAutomationGuard.validate_automation(valid_heartbeat, dir_id: 'test-heartbeat', host_is_mini: false)
     assert(v.any? { |m| m.include?('PAUSED on non-Mini') })
-    v2 = SaneAutomationGuard.validate_automation(valid_cron('status' => 'PAUSED'), dir_id: 'test-cron', host_is_mini: false)
+    v2 = SaneAutomationGuard.validate_automation(valid_heartbeat('status' => 'PAUSED'),
+                                                  dir_id: 'test-heartbeat', host_is_mini: false)
     assert_eq(v2, [])
   end
 end
@@ -223,7 +222,7 @@ test_category('Live heartbeat target validation') do
   test('declarative heartbeat metadata cannot bypass missing thread model defaults') do
     root, resolver = make_target_fixture(model: nil, effort: nil)
     violations = resolver.validate(VALID_THREAD_ID, automation: valid_heartbeat)
-    assert(violations.any? { |message| message.include?('thread row model/reasoning') })
+    assert(violations.any? { |message| message.include?('thread row must retain its current non-empty model') })
   ensure
     FileUtils.remove_entry(root) if root && File.exist?(root)
   end
@@ -234,19 +233,20 @@ test_category('Store validation + installer') do
   test('validate_store flags bad entries, skips non-spec dirs') do
     Dir.mktmpdir do |store|
       FileUtils.mkdir_p(File.join(store, 'manual-review')) # no automation.toml -> skipped
-      good = File.join(store, 'good-cron'); FileUtils.mkdir_p(good)
+      good = File.join(store, 'good-heartbeat'); FileUtils.mkdir_p(good)
       File.write(File.join(good, 'automation.toml'),
-                 "id = \"good-cron\"\nkind = \"cron\"\nname = \"G\"\nprompt = \"p\"\nstatus = \"PAUSED\"\n" \
-                 "rrule = \"FREQ=DAILY\"\nmodel = \"default\"\nreasoning_effort = \"high\"\ncwds = [\"/tmp\"]\n")
+                 "id = \"good-heartbeat\"\nkind = \"heartbeat\"\nname = \"G\"\nprompt = \"p\"\nstatus = \"PAUSED\"\n" \
+                 "rrule = \"FREQ=DAILY\"\ntarget_thread_id = \"\"\n")
       bad = File.join(store, 'bad-cron'); FileUtils.mkdir_p(bad)
       File.write(File.join(bad, 'automation.toml'),
-                 "id = \"bad-cron\"\nkind = \"cron\"\nname = \"B\"\nprompt = \"p\"\nstatus = \"ACTIVE\"\n" \
-                 "rrule = \"FREQ=DAILY\"\nmodel = \"gpt-4.1\"\nreasoning_effort = \"low\"\ncwds = []\n")
+                 "id = \"bad-cron\"\nkind = \"cron\"\nname = \"B\"\nprompt = \"p\"\nstatus = \"PAUSED\"\n" \
+                 "rrule = \"FREQ=DAILY\"\n")
       report = SaneAutomationGuard.validate_store(store, host_is_mini: true)
       assert_eq(report[:checked], 2)
       assert_eq(report[:skipped], 1)
       assert_eq(report[:violations].keys, ['bad-cron'])
-      assert_eq(report[:violations]['bad-cron'].size, 3)
+      assert_eq(report[:violations]['bad-cron'].size, 1)
+      assert_match(report[:violations]['bad-cron'].first, /heartbeat-only policy/)
     end
   end
 
@@ -254,8 +254,8 @@ test_category('Store validation + installer') do
     Dir.mktmpdir do |store|
       good = File.join(store, 'ok'); FileUtils.mkdir_p(good)
       File.write(File.join(good, 'automation.toml'),
-                 "id = \"ok\"\nkind = \"cron\"\nname = \"G\"\nprompt = \"p\"\nstatus = \"PAUSED\"\n" \
-                 "rrule = \"FREQ=DAILY\"\nmodel = \"default\"\nreasoning_effort = \"medium\"\ncwds = [\"/tmp\"]\n")
+                 "id = \"ok\"\nkind = \"heartbeat\"\nname = \"G\"\nprompt = \"p\"\nstatus = \"PAUSED\"\n" \
+                 "rrule = \"FREQ=DAILY\"\ntarget_thread_id = \"\"\n")
       _o, _e, s = Open3.capture3('ruby', GUARD, '--validate', store)
       assert_eq(s.exitstatus, 0)
       File.write(File.join(good, 'automation.toml'), "id = \"ok\"\nkind = \"cron\"\n")
@@ -268,7 +268,7 @@ test_category('Store validation + installer') do
   test('guard CLI distinguishes schema-valid specs from live-target-valid heartbeats') do
     root, _resolver, db, rollout_path = make_target_fixture
     store = File.join(root, 'automations')
-    spec_dir = File.join(store, 'test-cron')
+    spec_dir = File.join(store, 'test-heartbeat')
     FileUtils.mkdir_p(spec_dir)
     hb = valid_heartbeat
     File.write(File.join(spec_dir, 'automation.toml'), hb.map { |key, value|
@@ -291,13 +291,13 @@ test_category('Store validation + installer') do
     Dir.mktmpdir do |store|
       env = { 'SANE_AUTOMATION_STORE' => store }
       spec = File.join(store, 'spec.json')
-      File.write(spec, JSON.generate(valid_cron('status' => 'PAUSED')))
+      File.write(spec, JSON.generate(valid_heartbeat('status' => 'PAUSED')))
       out, _e, s = Open3.capture3(env, '/usr/bin/ruby', INSTALLER, 'install', spec)
       assert_eq(s.exitstatus, 0)
       toml_path = out.strip
       assert(File.file?(toml_path), 'toml written')
       first = SaneAutomationGuard.parse_toml(File.read(toml_path, encoding: 'UTF-8'))
-      assert_eq(first['id'], 'test-cron')
+      assert_eq(first['id'], 'test-heartbeat')
       assert_eq(first['prompt'], %q{Say "hi" — with\nnewline})
       assert_eq(first['cwds'], ['/Users/stephansmac/SaneApps/infra/SaneProcess'])
       created = first['created_at']
@@ -310,10 +310,11 @@ test_category('Store validation + installer') do
       assert_eq(second['created_at'], created, 'created_at preserved on reinstall')
       assert(second['updated_at'] >= created)
 
-      File.write(spec, JSON.generate(valid_cron('model' => 'gpt-4.1')))
+      File.write(spec, JSON.generate(cron_spec('status' => 'PAUSED')))
       _o, err, s3 = Open3.capture3(env, '/usr/bin/ruby', INSTALLER, 'install', spec)
       assert_eq(s3.exitstatus, 1)
       assert_match(err, /spec rejected/)
+      assert_match(err, /heartbeat-only policy/)
     end
   end
 

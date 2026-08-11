@@ -865,6 +865,42 @@
       ]
     },
     {
+      "path": "scripts/automation/app_review_watch_test.rb",
+      "label": "SaneProcess app review watcher tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/app_review_watch_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/cws_review_watch_test.rb",
+      "label": "SaneLot Chrome Web Store review transition watcher tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/cws_review_watch_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/cws_oauth_authorize_test.rb",
+      "label": "SaneLot Chrome Web Store OAuth authorization tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/cws_oauth_authorize_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/source_custody_test.rb",
+      "label": "SaneProcess source custody tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/source_custody_test.rb"
+      ]
+    },
+    {
       "path": "scripts/hooks/saneprompt_test.rb",
       "label": "saneprompt self-test support module",
       "status": "support",

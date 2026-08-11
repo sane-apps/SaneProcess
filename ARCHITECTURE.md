@@ -628,6 +628,18 @@ benchmarks remain separate evidence and are not queried by this report.
 
 ## 4. Landscape
 
+### Desktop OAuth Clients Are Public PKCE Clients
+
+The Chrome Web Store read-only watcher uses Google's installed-app loopback
+flow with PKCE. A desktop application cannot keep a client secret confidential,
+and Google's native-app contract marks `client_secret` optional for both the
+authorization-code exchange and refresh. The watcher therefore requires only
+the client ID plus refresh token, omits an absent secret from token requests,
+and accepts a secret only for compatibility with an existing client. Exact
+`chromewebstore.readonly` scope validation, state binding, PKCE verification,
+private token storage, Mini-only execution, and redacted diagnostics remain
+mandatory.
+
 ### Comparison
 
 | Tool | Enforcement | Orphan Cleanup | Circuit Breaker | Research Gate | Signed State | Tests |

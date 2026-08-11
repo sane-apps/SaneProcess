@@ -7,6 +7,7 @@ require 'json'
 require 'open3'
 require 'optparse'
 require 'rbconfig'
+require 'securerandom'
 require 'socket'
 require 'tempfile'
 require 'time'
@@ -19,13 +20,15 @@ module SaneAppReviewWatch
   DEFAULT_STATE_PATH = File.expand_path('~/SaneApps/outputs/app-review-watch-state.json')
   DEFAULT_ASC_SCRIPT = File.expand_path('~/SaneApps/apps/SaneLot/scripts/asc.rb')
   DEFAULT_APPS_ROOT = File.expand_path('~/SaneApps/apps')
-  ADVERSE_STATES = %w[REJECTED UNRESOLVED_ISSUES].freeze
+  ADVERSE_STATES = %w[REJECTED UNRESOLVED_ISSUES TAKEN_DOWN WARNED].freeze
+  MINI_HOSTNAMES = %w[mini mini.local stephans-mac-mini stephans-mac-mini.local].freeze
+  MATERIAL_ENTITY_FIELDS = %w[state version revision_state].freeze
 
   class WatchError < StandardError; end
 
   module_function
   def mini_host?(hostname = Socket.gethostname)
-    hostname.to_s.downcase.include?('mini')
+    MINI_HOSTNAMES.include?(hostname.to_s.downcase)
   end
 
   def entity_key(app_id, type, id)
@@ -36,16 +39,31 @@ module SaneAppReviewWatch
     ADVERSE_STATES.include?(state.to_s)
   end
 
-  def pending_event(changes, at:)
-    fingerprint = changes.sort_by { |change| change.fetch('entity_key') }.map do |change|
-      [change.fetch('entity_key'), change['previous_state'], change.fetch('state')]
+  def material_observation(entity)
+    MATERIAL_ENTITY_FIELDS.each_with_object({}) do |field, result|
+      result[field] = entity[field] if entity.key?(field)
     end
-    id = Digest::SHA256.hexdigest(JSON.generate(fingerprint))
+  end
+
+  def same_observation?(left, right)
+    return false unless left.is_a?(Hash) && right.is_a?(Hash)
+    return false unless left['state'].to_s == right['state'].to_s
+
+    comparable = MATERIAL_ENTITY_FIELDS.drop(1).select { |field| left.key?(field) && right.key?(field) }
+    comparable.all? { |field| left[field] == right[field] }
+  end
+
+  def pending_event(changes, at:, kind: SaneInternalReport::KIND, nonce: SecureRandom.hex(16))
+    fingerprint = changes.sort_by { |change| change.fetch('entity_key') }.map do |change|
+      [change.fetch('entity_key'), change['previous_state'], material_observation(change)]
+    end
+    detected_at = at.iso8601(6)
+    id = Digest::SHA256.hexdigest(JSON.generate([kind, detected_at, nonce, fingerprint]))
     {
       'id' => id,
-      'kind' => SaneInternalReport::KIND,
+      'kind' => kind,
       'template_version' => SaneInternalReport::TEMPLATE_VERSION,
-      'first_seen_at' => at.iso8601,
+      'first_seen_at' => detected_at,
       'last_attempt_at' => nil,
       'attempt_count' => 0,
       'last_error' => nil,
@@ -328,10 +346,13 @@ module SaneAppReviewWatch
   end
 
   class Engine
-    def initialize(store:, sender:, now: -> { Time.now.utc })
+    def initialize(store:, sender:, now: -> { Time.now.utc },
+                   event_kind: SaneInternalReport::KIND, alert_on_initial: false)
       @store = store
       @sender = sender
       @now = now
+      @event_kind = event_kind
+      @alert_on_initial = alert_on_initial
     end
 
     def run(snapshot)
@@ -381,34 +402,38 @@ module SaneAppReviewWatch
       current.each_with_object([]) do |(key, entity), changes|
         previous = observed[key]
         unless previous
-          next if delivered.dig(key, 'state').to_s == entity['state'].to_s
-          next if pending_state?(state, key, entity['state'])
+          next if SaneAppReviewWatch.same_observation?(delivered[key], entity)
+          next if pending_observation?(state, key, entity)
 
-          if SaneAppReviewWatch.adverse_state?(entity['state'])
+          if @alert_on_initial || SaneAppReviewWatch.adverse_state?(entity['state'])
             changes << entity.merge('previous_state' => nil)
           else
             delivered[key] = entity
           end
           next
         end
-        next if previous && previous['state'].to_s == entity['state'].to_s
-        next if delivered[key] && delivered[key]['state'].to_s == entity['state'].to_s
-        next if pending_state?(state, key, entity['state'])
+        next if SaneAppReviewWatch.same_observation?(previous, entity)
+        next if SaneAppReviewWatch.same_observation?(delivered[key], entity)
+        next if pending_observation?(state, key, entity)
 
-        changes << entity.merge('previous_state' => previous&.dig('state'))
+        changes << entity.merge(
+          'previous_state' => previous&.dig('state'),
+          'previous_version' => previous&.dig('version')
+        )
       end
     end
 
-    def pending_state?(state, entity_key, entity_state)
+    def pending_observation?(state, entity_key, entity)
       state.fetch('pending_alerts').values.any? do |event|
         event.fetch('changes').any? do |change|
-          change['entity_key'].to_s == entity_key.to_s && change['state'].to_s == entity_state.to_s
+          change['entity_key'].to_s == entity_key.to_s &&
+            SaneAppReviewWatch.same_observation?(change, entity)
         end
       end
     end
 
     def enqueue(state, changes)
-      event = SaneAppReviewWatch.pending_event(changes, at: @now.call)
+      event = SaneAppReviewWatch.pending_event(changes, at: @now.call, kind: @event_kind)
       state.fetch('pending_alerts')[event.fetch('id')] ||= event
     end
 
@@ -479,17 +504,15 @@ if __FILE__ == $PROGRAM_NAME
   begin
     options = {
       state: SaneAppReviewWatch::DEFAULT_STATE_PATH,
-      snapshot: nil,
-      allow_non_mini: false
+      snapshot: nil
     }
     OptionParser.new do |opts|
       opts.banner = 'Usage: app_review_watch.rb [--state PATH] [--snapshot PATH]'
       opts.on('--state PATH', 'Durable state path') { |value| options[:state] = value }
       opts.on('--snapshot PATH', 'Read-only fixture snapshot (tests/dry runs)') { |value| options[:snapshot] = value }
-      opts.on('--allow-non-mini', 'Tests only: allow a non-Mini host') { options[:allow_non_mini] = true }
     end.parse!
 
-    unless options[:allow_non_mini] || SaneAppReviewWatch.mini_host?
+    unless SaneAppReviewWatch.mini_host?
       raise SaneAppReviewWatch::WatchError, 'App Review watch is Mini-only'
     end
 

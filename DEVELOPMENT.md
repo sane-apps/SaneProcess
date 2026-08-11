@@ -134,6 +134,27 @@ ssh mini 'launchctl print gui/$(id -u)/com.saneapps.agentmemory'
 ssh mini '/opt/homebrew/bin/agentmemory status'
 ```
 
+### Source Custody Receipts
+
+Use the focused custody lane when current source must be preserved without
+fetch, pull, push, stash, commit, checkout, or worktree changes:
+
+```bash
+ssh mini 'cd ~/SaneApps/infra/SaneProcess && bash scripts/automation/git-sync-safe.sh \
+  --custody-path apps/SaneLot \
+  --custody-manifest-symlink lefthook.yml'
+```
+
+Repeat `--custody-path` for ordinary Git or non-Git sources. A
+`--custody-manifest-symlink` declaration requires exactly one custody source
+and names a path relative to it. The default rejects every escaping symlink.
+The explicit form records a relative link whose regular-file target stays
+inside `~/SaneApps`; neither the link nor target enters the source archive.
+The private manifest records the dependency and restore requirement. Each run
+hashes the safe inventory, writes mode-0600 artifacts, verifies any Git bundle,
+restores into a temporary directory, compares hashes and modes, and confirms
+the declared dependency again before atomic finalization.
+
 Public adopters do not need a Mac Mini. Replace Mini-first with your own
 canonical runner or local verification command, then route it through
 `SaneMaster.rb` so agents have one safe path to call.
@@ -531,6 +552,35 @@ Release rules:
   the same candidate build. Do not reuse stale direct-release screenshots as App
   Store proof.
 - Private signing, ASC, notary, and R2 setup details live in `DEVELOPER_SETUP.md`.
+
+### Chrome Web Store review watcher recovery
+
+The recurring CWS lane is GET-only. Its canonical values live in the private
+Mini cache and are restored one at a time through the watcher's stdin route;
+never put a refresh token or an optional legacy client secret in command
+arguments, automation prompts, logs, or receipts:
+
+```bash
+printf '%s' "$VALUE" | ruby scripts/automation/cws_review_watch.rb \
+  --store-stdin SANE_CWS_PUBLISHER_ID
+printf '%s' "$VALUE" | ruby scripts/automation/cws_review_watch.rb \
+  --store-stdin SANE_CWS_CLIENT_ID
+ruby scripts/automation/cws_oauth_authorize.rb
+ruby scripts/automation/cws_review_watch.rb --health-get
+```
+
+Obtain the publisher ID from the authenticated Mini Brave Developer Dashboard
+under Publisher > Settings. The OAuth helper stores its private authorization
+URL, uses desktop loopback PKCE, accepts only `chromewebstore.readonly`, and
+stores the refresh token only after the callback and exact-scope check succeed.
+Google documents `client_secret` as optional for both the installed-app code
+exchange and refresh; the helper omits it when unavailable and retains
+compatibility if a private cache already contains one. Drive that URL in the
+existing Mini Brave session; do not launch Chrome or Safari. A clean recovery
+requires the final health result and
+`outputs/cws-review-watch-receipt.json` to both report `official_get: ok`.
+`publisher_id_missing`, `oauth_missing`, `oauth_failed`, or `status_get_failed`
+is a visible blocker, not a no-change result.
 
 ## Runtime And Visual Evidence
 

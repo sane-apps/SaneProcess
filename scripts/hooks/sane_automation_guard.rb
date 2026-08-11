@@ -3,10 +3,8 @@
 
 # Validates the Codex automation store (~/.codex/automations/<id>/automation.toml)
 # against the SaneApps automation policy in ~/AGENTS.md:
-#   - cron automations must use the active client's `default` model with
-#     reasoning_effort medium+ so model upgrades flow through automatically
-#   - cron cwds must be non-empty absolute Mini-local paths
-#   - heartbeats must target an existing Mini-local thread (presence checked)
+#   - recurring Codex automations must be heartbeats; cron is not allowed
+#   - ACTIVE heartbeats must target an existing, unarchived Mini-local task
 #   - on any non-Mini host (e.g. the Air), every automation must stay PAUSED
 #
 # CLI: ruby sane_automation_guard.rb --validate ~/.codex/automations
@@ -25,9 +23,6 @@ module SaneAutomationGuard
                                  .split(File::PATH_SEPARATOR).map { |path| File.expand_path(path) }.freeze
   REQUIRED_FIELDS = %w[id kind name prompt status rrule].freeze
   EFFORT_OK = %w[medium high xhigh max ultra].freeze
-  DEFAULT_MODEL = 'default'
-  MIN_GPT_VERSION = [5, 5].freeze
-  MIN_GPT_LABEL = MIN_GPT_VERSION.join('.').freeze
   CANONICAL_UUID = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/.freeze
   THREAD_COLUMNS = %w[id archived cwd rollout_path model reasoning_effort].freeze
 
@@ -94,7 +89,7 @@ module SaneAutomationGuard
       end
 
       unless model_effort_compliant?(row['model'], row['reasoning_effort'])
-        violations << "heartbeat thread row model/reasoning must resolve to the current default or gpt-#{MIN_GPT_LABEL}+ with #{EFFORT_OK.join('/')} effort"
+        violations << "heartbeat thread row must retain its current non-empty model and #{EFFORT_OK.join('/')} effort"
       end
       violations
     rescue StandardError => e
@@ -154,7 +149,7 @@ module SaneAutomationGuard
     end
 
     def model_effort_compliant?(model, effort)
-      SaneAutomationGuard.gpt_version_ok?(model) && EFFORT_OK.include?(effort.to_s)
+      SaneAutomationGuard.thread_model_ok?(model) && EFFORT_OK.include?(effort.to_s)
     end
   end
 
@@ -198,13 +193,11 @@ module SaneAutomationGuard
     str.gsub(/\\(["\\nt])/) { { '"' => '"', '\\' => '\\', 'n' => "\n", 't' => "\t" }[Regexp.last_match(1)] }
   end
 
-  def gpt_version_ok?(model)
-    return true if model.to_s == DEFAULT_MODEL
-
-    m = model.to_s.match(/\Agpt-(\d+)(?:\.(\d+))?(?:-|$)/)
-    return false unless m
-
-    ([m[1].to_i, m[2].to_i] <=> MIN_GPT_VERSION) >= 0
+  # Heartbeats inherit the target task's live model. Do not pin a monthly model
+  # identifier here: the active client owns model upgrades. The guard only
+  # requires a real current row and a non-empty model value.
+  def thread_model_ok?(model)
+    !model.to_s.strip.empty?
   end
 
   # Returns an array of violation strings (empty = valid).
@@ -215,26 +208,12 @@ module SaneAutomationGuard
     end
     v << "id `#{auto['id']}` does not match directory `#{dir_id}`" if auto['id'] && auto['id'] != dir_id
     v << "status `#{auto['status']}` must be ACTIVE or PAUSED" unless %w[ACTIVE PAUSED].include?(auto['status'])
-    v << "kind `#{auto['kind']}` must be cron or heartbeat" unless %w[cron heartbeat].include?(auto['kind'])
+    unless auto['kind'] == 'heartbeat'
+      v << "heartbeat-only policy: kind `#{auto['kind']}` is not allowed; recurring Codex automations must use `heartbeat` with one persistent Mini-local target task"
+    end
     v << 'must stay PAUSED on non-Mini hosts (Air copies stay paused)' if !host_is_mini && auto['status'] == 'ACTIVE'
 
-    case auto['kind']
-    when 'cron'
-      unless auto['model'].to_s == DEFAULT_MODEL
-        v << "cron model `#{auto['model']}` must be `default` so the latest supported model is selected automatically"
-      end
-      unless EFFORT_OK.include?(auto['reasoning_effort'].to_s)
-        v << "cron reasoning_effort `#{auto['reasoning_effort']}` must be one of #{EFFORT_OK.join('/')}"
-      end
-      cwds = auto['cwds']
-      if !cwds.is_a?(Array) || cwds.empty?
-        v << 'cron must declare non-empty `cwds`'
-      else
-        cwds.each do |c|
-          v << "cron cwd `#{c}` must be an absolute path" unless c.to_s.start_with?('/')
-        end
-      end
-    when 'heartbeat'
+    if auto['kind'] == 'heartbeat'
       # PAUSED specs are safe storage. Activation is the boundary that requires
       # a real current-session target, so stale targets cannot become ACTIVE.
       if auto['status'] == 'ACTIVE'

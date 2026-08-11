@@ -4,6 +4,40 @@ As of: 2026-07-29 America/New_York
 Owner host: Mac Mini = tree truth; Air = controller.
 Repo: `~/SaneApps/infra/SaneProcess`
 
+## 2026-08-10 CWS watcher configuration-loss diagnosis and receipt hardening
+
+- The 15-minute App Review heartbeat is still active. Its publisher ID and
+  dedicated OAuth client ID were restored one at a time through the watcher's
+  guarded stdin route into the private Mini cache. The CWS lane now fails
+  precisely at `oauth_missing` because the read-only refresh grant has not yet
+  been completed; no browser grant or store mutation occurred. A Desktop OAuth
+  client secret is not required. The Apple lane remains independent and its
+  latest GET-only run was green with no pending transition.
+- Google Chrome Web Store API v2 still requires the publisher ID in the
+  `publishers/{publisherId}/items/{itemId}:fetchStatus` path. Google's current
+  official guide says the ID must be read from Developer Dashboard > Publisher
+  > Settings; the API has no publisher-list discovery route. `fetchStatus`
+  continues to accept the exact `chromewebstore.readonly` scope.
+- `cws_review_watch.rb` now treats empty process variables as absent instead of
+  letting them mask a valid private-cache value. Every run writes a private,
+  atomic, redacted `~/SaneApps/outputs/cws-review-watch-receipt.json` that names
+  config sources and distinguishes missing/invalid publisher ID, missing OAuth,
+  OAuth failure, official GET failure, and pending alert delivery. It never
+  writes IDs, tokens, secrets, provider bodies, or watcher state into that
+  receipt. Desktop PKCE now omits an unavailable client secret from code and
+  refresh exchanges while retaining compatibility when one exists. Focused
+  proof is green: OAuth 9/9, CWS watcher 23/23, App Review watcher 24/24,
+  automation guard 32/32, Ruby syntax, and `git diff --check`.
+- Remaining external gate: complete the exact read-only grant with
+  `cws_oauth_authorize.rb` in the existing authenticated Mini Brave session,
+  then require `cws_review_watch.rb --health-get` to return `official_get: ok`.
+  The active automation prompt also
+  names missing `/Users/stephansmac/SaneApps/AGENTS.md`; two attempts to update
+  that path through `automation_update` did not mutate the record, so the
+  automation control plane is blocked pending a healthy update route. Do not
+  hand-edit its TOML, change its cadence/thread, or create a substitute
+  scheduler.
+
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
 

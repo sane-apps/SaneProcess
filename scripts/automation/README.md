@@ -206,13 +206,20 @@ morning-report.sh
 
 ### Production Codex heartbeats
 
-Recurring Codex automation is Mini-owned and intentionally limited to two
-lanes: SaneApps Operations at 08:30 Mini local time and SaneCite Growth at
-10:00. Both append to live pinned Mini-local tasks. ACTIVE records must pass
-`sane_automation_guard.rb --validate ~/.codex/automations`, which verifies the
-task database row, session rollout identity/cwd containment, and GPT-5.5+
-reasoning profile. Use `automation_update` on the Mini for every production
-automation change; sync/reconcile scripts never mutate automation records.
+All recurring Codex automation is Mini-owned and heartbeat-only. Give each job
+one persistent, pinned Mini-local target task so future runs append there
+instead of creating a new task in Recents. Archive superseded generated run
+tasks after migration; this consolidates task history and sidebar noise but does
+not guarantee lower RAM or total disk use.
+
+ACTIVE records must pass
+`sane_automation_guard.rb --validate ~/.codex/automations`, which rejects cron
+and verifies each heartbeat's task database row, unarchived state, session
+rollout identity/cwd containment, current thread-owned model, and
+medium-or-higher reasoning profile. No monthly model identifier is pinned; the
+active client and persistent target task own model upgrades. Use
+`automation_update` on the Mini for every production automation change;
+sync/reconcile scripts and direct TOML edits never mutate production records.
 
 ### sync-codex-mini.sh
 

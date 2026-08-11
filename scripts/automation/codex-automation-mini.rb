@@ -8,11 +8,11 @@
 #   ruby codex-automation-mini.rb list
 #   ruby codex-automation-mini.rb validate
 #
-# Policy (enforced via scripts/hooks/sane_automation_guard.rb): cron specs need
-# id/kind/name/prompt/status/rrule + model `default` with reasoning_effort
-# medium+ and Mini-local cwds so model upgrades flow through automatically;
-# heartbeats need target_thread_id. Installs are
-# refused on non-Mini hosts — run from the Air via `ssh mini '...'`.
+# Policy (enforced via scripts/hooks/sane_automation_guard.rb): every recurring
+# Codex automation must be a heartbeat with one persistent Mini-local target
+# task. ACTIVE targets are validated against the current task DB and rollout.
+# Production changes go through `automation_update` on the Mini. Direct installs
+# are refused on non-Mini hosts — run diagnostics from the Air via `ssh mini`.
 
 require 'json'
 require 'socket'
