@@ -26,6 +26,37 @@ ReleaseGuardrailTestSupport.register(__FILE__, 'SaneMaster resource soak targets
       true
     end
 
+    test('iOS Simulator uses physical footprint for its absolute memory ceiling') do
+      base_metrics = {
+        sample_count: 2, physical_missing_sample_count: 0, fd_missing_sample_count: 0,
+        avg_cpu: 0.0, peak_rss_mb: 316.0, rss_growth_mb: 0.1,
+        peak_physical_footprint_mb: 52.0, physical_footprint_growth_mb: 0.0,
+        peak_fd_count: 95, fd_growth: 0, sample_span_seconds: 0.0
+      }
+      ios = subject.send(
+        :parse_resource_soak_args,
+        ['--target', 'ios-simulator', '--bundle-id', 'com.example.app',
+         '--simulator-udid', 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE',
+         '--fixed', '--duration-seconds', '0']
+      )
+      mac = subject.send(:parse_resource_soak_args, ['--target', 'macos-app', '--fixed', '--duration-seconds', '0'])
+
+      assert(!ios[:enforce_rss_peak], 'simulator RSS must not be the absolute iOS memory ceiling')
+      assert(mac[:enforce_rss_peak], 'macOS app RSS ceiling must remain enforced')
+      assert_eq(subject.send(:resource_soak_issues, base_metrics, ios), [])
+      assert_includes(subject.send(:resource_soak_issues, base_metrics, mac).join("\n"), 'peakRss 316.0MB > 256.0MB')
+      assert_eq(subject.send(:resource_soak_budget_payload, ios)[:enforce_rss_peak], false)
+
+      rss_growth = base_metrics.merge(rss_growth_mb: 65.0)
+      assert_includes(subject.send(:resource_soak_issues, rss_growth, ios).join("\n"),
+                      'rssGrowth 65.0MB > 64.0MB')
+
+      physical_overage = base_metrics.merge(peak_physical_footprint_mb: 193.0)
+      assert_includes(subject.send(:resource_soak_issues, physical_overage, ios).join("\n"),
+                      'peakPhysical 193.0MB > 192.0MB')
+      true
+    end
+
     test('private Brave target rejects a normal signed-in browser receipt') do
       Dir.mktmpdir('resource-soak-browser-', '/private/tmp') do |dir|
         profile = File.join(dir, 'profile')

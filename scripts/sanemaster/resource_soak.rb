@@ -284,6 +284,10 @@ module SaneMasterModules
       options[:adaptive_baseline_sample_count] = [options[:adaptive_baseline_sample_count], 1].max
       options[:require_physical] = %w[macos-app ios-simulator].include?(options[:target])
       options[:require_fd] = !%w[macos-app ios-simulator].include?(options[:target])
+      # Simulator RSS includes host-mapped clean/shared pages and is not the iOS
+      # memory-pressure metric. Keep RSS growth checks, but use phys_footprint
+      # for the absolute iOS Simulator ceiling (matching Xcode/XCTMemoryMetric).
+      options[:enforce_rss_peak] = options[:target] != 'ios-simulator'
       if options[:target] != 'macos-app'
         stem = options[:target].tr('-', '_')
         options[:artifact_path] = "/tmp/sane_resource_soak_#{stem}.json" unless explicit_paths.include?(:artifact_path)
@@ -318,7 +322,9 @@ module SaneMasterModules
 
     def resource_soak_adaptive_immediate_issues(metrics, options)
       issues = []
-      issues << format('peakRss %.1fMB > %.1fMB', metrics[:peak_rss_mb], options[:rss_peak_mb_max]) if metrics[:peak_rss_mb].to_f > options[:rss_peak_mb_max]
+      if options[:enforce_rss_peak] && metrics[:peak_rss_mb].to_f > options[:rss_peak_mb_max]
+        issues << format('peakRss %.1fMB > %.1fMB', metrics[:peak_rss_mb], options[:rss_peak_mb_max])
+      end
       if metrics[:peak_physical_footprint_mb] && metrics[:peak_physical_footprint_mb].to_f > options[:physical_peak_mb_max]
         issues << format('peakPhysical %.1fMB > %.1fMB', metrics[:peak_physical_footprint_mb], options[:physical_peak_mb_max])
       end
@@ -362,9 +368,12 @@ module SaneMasterModules
       issues << "file descriptor count missing for #{metrics[:fd_missing_sample_count]} sample(s)" if options[:require_fd] && metrics[:fd_missing_sample_count].to_i.positive?
       required_span = [options[:min_duration_seconds].to_f - options[:interval_seconds] - 1.0, 0.0].max
       issues << format('sampled span %.1fs is shorter than required %.1fs', metrics[:sample_span_seconds], required_span) if required_span.positive? && metrics[:sample_span_seconds].to_f < required_span
-      [[:avg_cpu, :cpu_avg_max, 'avgCpu %.1f%% > %.1f%%'], [:peak_rss_mb, :rss_peak_mb_max, 'peakRss %.1fMB > %.1fMB'],
-       [:rss_growth_mb, :rss_growth_mb_max, 'rssGrowth %.1fMB > %.1fMB'], [:peak_physical_footprint_mb, :physical_peak_mb_max, 'peakPhysical %.1fMB > %.1fMB'],
-       [:physical_footprint_growth_mb, :physical_growth_mb_max, 'physicalGrowth %.1fMB > %.1fMB']].each do |metric, budget, template|
+      checks = [[:avg_cpu, :cpu_avg_max, 'avgCpu %.1f%% > %.1f%%'],
+                [:rss_growth_mb, :rss_growth_mb_max, 'rssGrowth %.1fMB > %.1fMB'],
+                [:peak_physical_footprint_mb, :physical_peak_mb_max, 'peakPhysical %.1fMB > %.1fMB'],
+                [:physical_footprint_growth_mb, :physical_growth_mb_max, 'physicalGrowth %.1fMB > %.1fMB']]
+      checks << [:peak_rss_mb, :rss_peak_mb_max, 'peakRss %.1fMB > %.1fMB'] if options[:enforce_rss_peak]
+      checks.each do |metric, budget, template|
         issues << format(template, metrics[metric], options[budget]) if metrics[metric] && metrics[metric].to_f > options[budget]
       end
       if options[:fd_peak_max] && metrics[:peak_fd_count].to_i > options[:fd_peak_max]
@@ -384,7 +393,7 @@ module SaneMasterModules
     def resource_soak_budget_payload(options)
       keys = %i[adaptive target_duration_seconds min_duration_seconds adaptive_initial_interval_seconds
                 adaptive_initial_duration_seconds adaptive_consecutive_failures adaptive_baseline_sample_count
-                adaptive_rolling_window_seconds cpu_avg_max rss_peak_mb_max rss_growth_mb_max
+                adaptive_rolling_window_seconds cpu_avg_max rss_peak_mb_max rss_growth_mb_max enforce_rss_peak
                 physical_peak_mb_max physical_growth_mb_max fd_peak_max fd_growth_max adaptive_cpu_avg_max
                 adaptive_cpu_peak_max adaptive_rss_growth_mb_max adaptive_physical_growth_mb_max
                 adaptive_rss_slope_mb_per_min_max adaptive_physical_slope_mb_per_min_max
