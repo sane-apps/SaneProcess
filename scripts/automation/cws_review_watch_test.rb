@@ -151,7 +151,7 @@ exit(run_tests('CWS Review Watch Tests') do
       'SANE_CWS_PUBLISHER_ID' => 'publisher-1',
       'SANE_CWS_ACCESS_TOKEN' => 'access-fixture'
     )
-    ready_without_secret = SaneCwsReviewWatch.configuration_diagnostic(
+    blocked_without_secret = SaneCwsReviewWatch.configuration_diagnostic(
       'SANE_CWS_PUBLISHER_ID' => 'publisher-1',
       'SANE_CWS_CLIENT_ID' => 'client-fixture',
       'SANE_CWS_REFRESH_TOKEN' => 'refresh-fixture'
@@ -160,12 +160,26 @@ exit(run_tests('CWS Review Watch Tests') do
     assert_eq(missing_publisher['error_code'], 'publisher_id_missing')
     assert_eq(missing_oauth['error_code'], 'oauth_missing')
     assert_includes(missing_oauth['missing_configuration'], 'SANE_CWS_REFRESH_TOKEN')
-    assert(!missing_oauth['missing_configuration'].include?('SANE_CWS_CLIENT_SECRET'))
+    assert_includes(missing_oauth['missing_configuration'], 'SANE_CWS_CLIENT_SECRET')
     assert_eq(ready['status'], 'ready')
     assert_eq(ready['credential_mode'], 'access_token')
-    assert_eq(ready_without_secret['status'], 'ready')
-    assert_eq(ready_without_secret['credential_mode'], 'refresh_token')
-    assert_eq(ready_without_secret['missing_configuration'], [])
+    assert_eq(blocked_without_secret['status'], 'blocked')
+    assert_eq(blocked_without_secret['credential_mode'], 'unavailable')
+    assert_eq(blocked_without_secret['missing_configuration'], ['SANE_CWS_CLIENT_SECRET'])
+    true
+  end
+
+  test('credential stdin storage rejects empty input without crashing') do
+    Dir.mktmpdir('cws-empty-credential') do |dir|
+      begin
+        SaneCwsReviewWatch.store_env_value_from_stdin(
+          'SANE_CWS_CLIENT_SECRET', input: StringIO.new(''), env_path: File.join(dir, 'env')
+        )
+        assert(false, 'empty credential input must fail closed')
+      rescue SaneAppReviewWatch::WatchError => e
+        assert_includes(e.message, 'input is empty')
+      end
+    end
     true
   end
 
@@ -249,7 +263,7 @@ exit(run_tests('CWS Review Watch Tests') do
     end
   end
 
-  test('local health accepts desktop refresh credentials without client secret') do
+  test('local health blocks refresh credentials without the required client secret') do
     Dir.mktmpdir('cws-health-desktop-pkce') do |dir|
       state = File.join(dir, 'state.json')
       receipt = File.join(dir, 'receipt.json')
@@ -264,12 +278,13 @@ exit(run_tests('CWS Review Watch Tests') do
         '--health', '--state', state, '--receipt', receipt
       )
 
-      assert(status.success?, stderr)
-      result = JSON.parse(stdout)
+      assert(!status.success?, 'health unexpectedly accepted refresh credentials without a client secret')
       persisted = JSON.parse(File.read(receipt))
-      assert_eq(result['credential_mode'], 'refresh_token')
-      assert_eq(result['official_get'], 'skipped')
-      assert_eq(persisted['missing_configuration'], [])
+      assert_includes(stderr, 'oauth_missing')
+      assert_eq(stdout, '')
+      assert_eq(persisted['credential_mode'], 'unavailable')
+      assert_eq(persisted['official_get'], 'skipped')
+      assert_eq(persisted['missing_configuration'], ['SANE_CWS_CLIENT_SECRET'])
       assert_eq(persisted.dig('configuration_sources', 'SANE_CWS_CLIENT_SECRET'), 'missing')
       assert(!File.exist?(state), 'health mode created watcher state')
       true
@@ -348,7 +363,7 @@ exit(run_tests('CWS Review Watch Tests') do
     true
   end
 
-  test('refreshes desktop OAuth without client secret and then performs GET-only status') do
+  test('refreshes canonical desktop OAuth with client secret and then performs GET-only status') do
     calls = []
     requester = lambda do |**args|
       calls << args
@@ -362,7 +377,7 @@ exit(run_tests('CWS Review Watch Tests') do
       publisher_id: 'publisher-1',
       access_token: '',
       client_id: 'client-fixture',
-      client_secret: '',
+      client_secret: 'secret-fixture',
       refresh_token: 'refresh-fixture',
       requester: requester
     )
@@ -372,7 +387,7 @@ exit(run_tests('CWS Review Watch Tests') do
     refresh_fields = URI.decode_www_form(calls.first[:body]).to_h
     assert_eq(refresh_fields['client_id'], 'client-fixture')
     assert_eq(refresh_fields['refresh_token'], 'refresh-fixture')
-    assert(!refresh_fields.key?('client_secret'))
+    assert_eq(refresh_fields['client_secret'], 'secret-fixture')
     assert_eq(calls.last[:headers]['Authorization'], 'Bearer short-lived-token')
     assert(!calls.last[:uri].to_s.include?('short-lived-token'))
     true
@@ -603,7 +618,7 @@ exit(run_tests('CWS Review Watch Tests') do
     rescue SaneAppReviewWatch::WatchError => e
       assert_includes(e.message, 'CWS OAuth credential is unavailable')
       assert_includes(e.message, 'SANE_CWS_REFRESH_TOKEN')
-      assert(!e.message.include?('SANE_CWS_CLIENT_SECRET'))
+      assert_includes(e.message, 'SANE_CWS_CLIENT_SECRET')
     end
     true
   end

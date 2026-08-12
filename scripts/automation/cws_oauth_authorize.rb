@@ -17,7 +17,10 @@ module SaneCwsOauthAuthorize
   AUTH_URI = URI('https://accounts.google.com/o/oauth2/v2/auth')
   TOKEN_URI = URI('https://oauth2.googleapis.com/token')
   SCOPE = 'https://www.googleapis.com/auth/chromewebstore.readonly'
-  CALLBACK_PATH = '/oauth/callback'
+  # Google's installed-app loopback flow documents the redirect as the loopback
+  # origin with no custom path. Keep the listener and token exchange byte-for-byte
+  # aligned with that documented form.
+  CALLBACK_PATH = '/'
   DEFAULT_URL_PATH = File.expand_path('~/Library/Caches/SaneProcess/cws-oauth-url')
   WAIT_SECONDS = 300
   CALLBACK_READ_SECONDS = 5
@@ -121,7 +124,9 @@ module SaneCwsOauthAuthorize
     payload = JSON.parse(response.fetch(:body).to_s)
     unless (200..299).cover?(code_value)
       oauth_error = payload['error'].to_s
-      suffix = oauth_error.empty? ? '' : " (#{oauth_error})"
+      oauth_description = redacted_oauth_description(payload['error_description'])
+      details = [oauth_error, oauth_description].reject(&:empty?).join(': ')
+      suffix = details.empty? ? '' : " (#{details})"
       raise SaneAppReviewWatch::WatchError, "CWS OAuth token exchange returned HTTP #{code_value}#{suffix}"
     end
 
@@ -134,6 +139,28 @@ module SaneCwsOauthAuthorize
     refresh_token
   rescue JSON::ParserError, KeyError
     raise SaneAppReviewWatch::WatchError, 'CWS OAuth token exchange returned an invalid response'
+  end
+
+  def redacted_oauth_description(value)
+    description = value.to_s.encode('UTF-8', invalid: :replace, undef: :replace, replace: '')
+                       .gsub(/\s+/, ' ').strip
+    return '' if description.empty?
+
+    # Provider diagnostics are useful, but must never echo an authorization code,
+    # access token, refresh token, client secret, or other long opaque credential.
+    description.gsub(%r{(?:4/|ya29\.)[A-Za-z0-9._~-]+}, '[redacted]')
+               .gsub(/[A-Za-z0-9._~-]{40,}/, '[redacted]')
+               .slice(0, 240)
+  end
+
+  def validate_configuration!(configuration)
+    missing = %w[SANE_CWS_CLIENT_ID SANE_CWS_CLIENT_SECRET].select do |name|
+      configuration[name].to_s.strip.empty?
+    end
+    return true if missing.empty?
+
+    raise SaneAppReviewWatch::WatchError,
+          "CWS OAuth credential is unavailable (missing #{missing.join(', ')})"
   end
 
   def perform_token_request(fields)
@@ -209,13 +236,10 @@ module SaneCwsOauthAuthorize
     raise SaneAppReviewWatch::WatchError, 'CWS OAuth authorization is Mini-only' unless SaneCwsReviewWatch.mini_host?
 
     configuration = SaneCwsReviewWatch.credential_configuration
-    if configuration['SANE_CWS_CLIENT_ID'].to_s.empty?
-      raise SaneAppReviewWatch::WatchError,
-            'CWS OAuth credential is unavailable (missing SANE_CWS_CLIENT_ID)'
-    end
+    validate_configuration!(configuration)
     server = TCPServer.new('127.0.0.1', 0)
     port = server.addr[1]
-    redirect_uri = "http://127.0.0.1:#{port}#{CALLBACK_PATH}"
+    redirect_uri = "http://127.0.0.1:#{port}"
     state = SecureRandom.urlsafe_base64(32, false)
     verifier, challenge = pkce_pair
     url = authorization_url(

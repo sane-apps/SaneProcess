@@ -30,7 +30,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
   test('authorization URL is desktop loopback PKCE and exact read-only scope') do
     url = SaneCwsOauthAuthorize.authorization_url(
       client_id: 'client-fixture',
-      redirect_uri: 'http://127.0.0.1:43123/oauth/callback',
+      redirect_uri: 'http://127.0.0.1:43123',
       state: 'state-fixture',
       challenge: 'challenge-fixture'
     )
@@ -39,7 +39,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
 
     assert_eq(uri.host, 'accounts.google.com')
     assert_eq(params['scope'], SaneCwsOauthAuthorize::SCOPE)
-    assert_eq(params['redirect_uri'], 'http://127.0.0.1:43123/oauth/callback')
+    assert_eq(params['redirect_uri'], 'http://127.0.0.1:43123')
     assert_eq(params['code_challenge_method'], 'S256')
     assert_eq(params['access_type'], 'offline')
     assert_eq(params['prompt'], 'consent')
@@ -47,7 +47,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
   end
 
   test('callback requires exact path state and authorization code') do
-    line = 'GET /oauth/callback?state=expected&code=code-fixture HTTP/1.1'
+    line = 'GET /?state=expected&code=code-fixture HTTP/1.1'
     code = SaneCwsOauthAuthorize.parse_callback(line, expected_state: 'expected')
     assert_eq(code, 'code-fixture')
 
@@ -80,7 +80,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
     end
     refresh = SaneCwsOauthAuthorize.exchange_code(
       code: 'code-fixture', verifier: 'verifier-fixture',
-      redirect_uri: 'http://127.0.0.1:43123/oauth/callback',
+      redirect_uri: 'http://127.0.0.1:43123',
       configuration: configuration, requester: requester
     )
     assert_eq(refresh, 'refresh-fixture')
@@ -104,7 +104,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
     end
     refresh = SaneCwsOauthAuthorize.exchange_code(
       code: 'code-fixture', verifier: 'verifier-fixture',
-      redirect_uri: 'http://127.0.0.1:43123/oauth/callback',
+      redirect_uri: 'http://127.0.0.1:43123',
       configuration: configuration, requester: requester
     )
     assert_eq(refresh, 'refresh-fixture')
@@ -116,7 +116,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
     begin
       SaneCwsOauthAuthorize.exchange_code(
         code: 'code-fixture', verifier: 'verifier-fixture',
-        redirect_uri: 'http://127.0.0.1:43123/oauth/callback',
+        redirect_uri: 'http://127.0.0.1:43123',
         configuration: {}, requester: ->(_fields) { requested = true }
       )
       assert(false, 'missing client id must fail')
@@ -143,7 +143,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
     end
     begin
       SaneCwsOauthAuthorize.exchange_code(
-        code: 'code', verifier: 'verifier', redirect_uri: 'http://127.0.0.1:1/oauth/callback',
+        code: 'code', verifier: 'verifier', redirect_uri: 'http://127.0.0.1:1',
         configuration: configuration, requester: requester
       )
       assert(false, 'broadened scope must fail')
@@ -172,6 +172,49 @@ exit(run_tests('CWS OAuth Authorize Tests') do
     true
   end
 
+  test('token exchange reports a useful redacted provider diagnostic') do
+    requester = lambda do |_fields|
+      {
+        code: 400,
+        body: JSON.generate(
+          error: 'invalid_request',
+          error_description: "Missing required parameter: client_secret 4/#{'s' * 80}"
+        )
+      }
+    end
+    begin
+      SaneCwsOauthAuthorize.exchange_code(
+        code: 'code-fixture', verifier: 'verifier-fixture',
+        redirect_uri: 'http://127.0.0.1:43123',
+        configuration: { 'SANE_CWS_CLIENT_ID' => 'client-fixture' }, requester: requester
+      )
+      assert(false, 'HTTP 400 must fail')
+    rescue SaneAppReviewWatch::WatchError => e
+      assert_includes(e.message, 'invalid_request')
+      assert_includes(e.message, 'Missing required parameter: client_secret')
+      assert_includes(e.message, '[redacted]')
+      assert(!e.message.include?('s' * 40), 'provider diagnostic leaked an opaque credential')
+    end
+    true
+  end
+
+  test('interactive flow fails before consent when the canonical client secret is unavailable') do
+    begin
+      SaneCwsOauthAuthorize.validate_configuration!(
+        'SANE_CWS_CLIENT_ID' => 'client-fixture',
+        'SANE_CWS_CLIENT_SECRET' => ''
+      )
+      assert(false, 'missing client secret must block before opening consent')
+    rescue SaneAppReviewWatch::WatchError => e
+      assert_includes(e.message, 'missing SANE_CWS_CLIENT_SECRET')
+    end
+    assert(SaneCwsOauthAuthorize.validate_configuration!(
+      'SANE_CWS_CLIENT_ID' => 'client-fixture',
+      'SANE_CWS_CLIENT_SECRET' => 'secret-fixture'
+    ))
+    true
+  end
+
   test('success response is emitted only after exchange and private storage complete') do
     order = []
     socket = OAuthRecordingSocket.new { order << :response }
@@ -188,7 +231,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
       socket: socket,
       code: 'code-fixture',
       verifier: 'verifier-fixture',
-      redirect_uri: 'http://127.0.0.1:43123/oauth/callback',
+      redirect_uri: 'http://127.0.0.1:43123',
       configuration: {},
       exchanger: exchanger,
       storer: storer
@@ -204,7 +247,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
         socket: failed_socket,
         code: 'code-fixture',
         verifier: 'verifier-fixture',
-        redirect_uri: 'http://127.0.0.1:43123/oauth/callback',
+        redirect_uri: 'http://127.0.0.1:43123',
         configuration: {},
         exchanger: exchanger,
         storer: ->(_value) { raise SaneAppReviewWatch::WatchError, 'store failed' }
@@ -218,9 +261,9 @@ exit(run_tests('CWS OAuth Authorize Tests') do
 
   test('callback reader accepts a complete request and bounds stalled or oversized clients') do
     reader, writer = Socket.pair(:UNIX, :STREAM, 0)
-    writer.write("GET /oauth/callback?state=s&code=c HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    writer.write("GET /?state=s&code=c HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
     line = SaneCwsOauthAuthorize.read_callback_request_line(reader, timeout_seconds: 0.2)
-    assert_eq(line, 'GET /oauth/callback?state=s&code=c HTTP/1.1' + "\r\n")
+    assert_eq(line, 'GET /?state=s&code=c HTTP/1.1' + "\r\n")
     reader.close
     writer.close
 
@@ -239,7 +282,7 @@ exit(run_tests('CWS OAuth Authorize Tests') do
     end
 
     large_reader, large_writer = Socket.pair(:UNIX, :STREAM, 0)
-    large_writer.write("GET /oauth/callback HTTP/1.1\r\nX-Fill: #{'a' * 64}")
+    large_writer.write("GET / HTTP/1.1\r\nX-Fill: #{'a' * 64}")
     begin
       SaneCwsOauthAuthorize.read_callback_request_line(
         large_reader, timeout_seconds: 0.2, max_header_bytes: 64

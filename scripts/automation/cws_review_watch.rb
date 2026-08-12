@@ -28,6 +28,11 @@ module SaneCwsReviewWatch
   ].freeze
   TOKEN_URI = URI('https://oauth2.googleapis.com/token')
   API_ORIGIN = 'https://chromewebstore.googleapis.com'
+  REFRESH_CREDENTIAL_NAMES = %w[
+    SANE_CWS_CLIENT_ID
+    SANE_CWS_CLIENT_SECRET
+    SANE_CWS_REFRESH_TOKEN
+  ].freeze
 
   class Client
     def initialize(publisher_id:, item_id: DEFAULT_ITEM_ID, item_name: DEFAULT_ITEM_NAME,
@@ -119,6 +124,7 @@ module SaneCwsReviewWatch
     def access_token
       refresh_values = {
         'SANE_CWS_CLIENT_ID' => @client_id,
+        'SANE_CWS_CLIENT_SECRET' => @client_secret,
         'SANE_CWS_REFRESH_TOKEN' => @refresh_token
       }
       missing = refresh_values.select { |_name, value| value.empty? }.keys
@@ -228,8 +234,7 @@ module SaneCwsReviewWatch
   end
 
   def credential_mode(configuration)
-    refresh_names = %w[SANE_CWS_CLIENT_ID SANE_CWS_REFRESH_TOKEN]
-    missing = refresh_names.select { |name| configuration[name].to_s.empty? }
+    missing = REFRESH_CREDENTIAL_NAMES.select { |name| configuration[name].to_s.empty? }
     return 'refresh_token' if missing.empty?
     return 'access_token' unless configuration['SANE_CWS_ACCESS_TOKEN'].to_s.empty?
 
@@ -253,8 +258,7 @@ module SaneCwsReviewWatch
       }
     end
 
-    refresh_names = %w[SANE_CWS_CLIENT_ID SANE_CWS_REFRESH_TOKEN]
-    missing = refresh_names.select { |name| configuration[name].to_s.empty? }
+    missing = REFRESH_CREDENTIAL_NAMES.select { |name| configuration[name].to_s.empty? }
     mode = if missing.empty?
              'refresh_token'
            elsif !configuration['SANE_CWS_ACCESS_TOKEN'].to_s.empty?
@@ -330,7 +334,7 @@ module SaneCwsReviewWatch
   def store_env_value_from_stdin(name, input: $stdin, env_path: DEFAULT_ENV_PATH)
     raise SaneAppReviewWatch::WatchError, 'CWS credential name is not allowlisted' unless ENV_NAMES.include?(name)
 
-    value = input.read(16_385)
+    value = input.read(16_385).to_s
     if value.bytesize > 16_384 || value.include?("\0") || value.lines.length > 1
       raise SaneAppReviewWatch::WatchError, 'CWS credential input is invalid'
     end
