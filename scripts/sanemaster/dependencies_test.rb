@@ -364,9 +364,34 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
   end
 
   test_category('LaunchAgent defaults') do
-    test('mcp watchdog install defaults to a five minute interval') do
+    test('mcp watchdog install defaults to a 30 minute interval') do
       source = File.read(File.expand_path('dependencies.rb', __dir__))
-      assert_includes(source, 'interval_seconds = 300')
+      assert_includes(source, 'interval_seconds = 1800')
+      true
+    end
+  end
+
+  test_category('Session-owned mcp-remote') do
+    test('does not kill live Grok mcp-remote sessions that exceed the old generic cap') do
+      rows = [
+        process_row(pid: 50, ppid: 1, etimes: 3600, command: '/opt/homebrew/bin/grok'),
+        process_row(pid: 94822, ppid: 50, etimes: 1200, command: 'node /Users/stephansmac/.npm/_npx/bf406861e00d25a6/node_modules/.bin/mcp-remote https://mcp.cloudflare.com/mcp --transport http-only --silent'),
+        process_row(pid: 94935, ppid: 50, etimes: 1200, command: 'node /Users/stephansmac/.npm/_npx/bf406861e00d25a6/node_modules/.bin/mcp-remote https://bindings.mcp.cloudflare.com/mcp --transport http-only --silent'),
+        process_row(pid: 95146, ppid: 50, etimes: 1200, command: 'node /Users/stephansmac/.npm/_npx/bf406861e00d25a6/node_modules/.bin/mcp-remote https://observability.mcp.cloudflare.com/mcp --transport http-only --silent'),
+        process_row(pid: 95869, ppid: 50, etimes: 1200, command: 'node /Users/stephansmac/.npm/_npx/bf406861e00d25a6/node_modules/.bin/mcp-remote https://memory.saneapps.com/mcp --transport http-only --silent'),
+        process_row(pid: 95937, ppid: 50, etimes: 1200, command: 'node /Users/stephansmac/.npm/_npx/bf406861e00d25a6/node_modules/.bin/mcp-remote https://builds.mcp.cloudflare.com/mcp --transport http-only --silent')
+      ]
+
+      analysis = build_analysis(subject, rows, max_per_server: 4)
+      remote = analysis[:processes].select { |proc_info| proc_info[:server] == 'mcp-remote' }
+      assert_eq(remote.length, 5, 'each mcp-remote should classify as mcp-remote, not generic-mcp')
+      assert_eq(analysis[:processes].count { |proc_info| proc_info[:server] == 'generic-mcp' }, 0)
+
+      cleanup = build_cleanup_plan(subject, analysis, max_per_server: 4, duplicate_grace_seconds: 0)
+      remote_pids = [94822, 94935, 95146, 95869, 95937]
+      remote_pids.each do |pid|
+        assert(!cleanup[:pids].include?(pid), "live mcp-remote #{pid} must not be culled")
+      end
       true
     end
   end
