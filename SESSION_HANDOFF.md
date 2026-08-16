@@ -4,6 +4,19 @@ As of: 2026-07-29 America/New_York
 Owner host: Mac Mini = tree truth; Air = controller.
 Repo: `~/SaneApps/infra/SaneProcess`
 
+## 2026-08-16 App Review/CWS watcher live recovery
+
+- The shared 15-minute Mini heartbeat is ACTIVE and still runs only the two
+  canonical GET-only Apple and Chrome Web Store watchers. Its governing-file
+  path was corrected through `automation_update` from the nonexistent
+  `/Users/stephansmac/SaneApps/AGENTS.md` to
+  `/Users/stephansmac/AGENTS.md`; cadence, target task, mutation prohibitions,
+  pending-alert retry behavior, and model inheritance were preserved.
+- A fresh paired Mini run returned status `ok` for both watchers with zero
+  delivered, zero pending, and no diagnostics. The CWS OAuth refresh path also
+  returned `official_get: ok`; the current dashboard revision remains rejected
+  1.2.0 until the separately gated 1.2.1 submission.
+
 ## 2026-08-10 CWS watcher configuration-loss diagnosis and receipt hardening
 
 - The 15-minute App Review heartbeat is still active. Its publisher ID and
@@ -28,15 +41,10 @@ Repo: `~/SaneApps/infra/SaneProcess`
   refresh exchanges while retaining compatibility when one exists. Focused
   proof is green: OAuth 9/9, CWS watcher 23/23, App Review watcher 24/24,
   automation guard 32/32, Ruby syntax, and `git diff --check`.
-- Remaining external gate: complete the exact read-only grant with
-  `cws_oauth_authorize.rb` in the existing authenticated Mini Brave session,
-  then require `cws_review_watch.rb --health-get` to return `official_get: ok`.
-  The active automation prompt also
-  names missing `/Users/stephansmac/SaneApps/AGENTS.md`; two attempts to update
-  that path through `automation_update` did not mutate the record, so the
-  automation control plane is blocked pending a healthy update route. Do not
-  hand-edit its TOML, change its cadence/thread, or create a substitute
-  scheduler.
+- Resolved 2026-08-16: the exact read-only grant now returns
+  `official_get: ok`, and `automation_update` corrected the governing-file path
+  while preserving the existing cadence and target task. No substitute
+  scheduler or direct TOML mutation was used.
 
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
