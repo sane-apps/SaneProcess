@@ -1,8 +1,23 @@
 # SaneProcess Session Handoff
 
-As of: 2026-07-29 America/New_York
+As of: 2026-08-17 America/New_York
 Owner host: Mac Mini = tree truth; Air = controller.
 Repo: `~/SaneApps/infra/SaneProcess`
+
+## 2026-08-17 locked Mini screenshot evidence lane
+
+- `capture-mini-screenshot.sh --locked-evidence` now preserves nonzero helper
+  failures, runs through a clean non-login GUI shell, and delegates to a fresh
+  private byte-bound helper tree rather than the shared `/tmp` copy.
+- `mini-screenshot-evidence-helper.sh` validates and copies the exact helper
+  inventory, uses absolute system tools, re-raises the exact Brave PID/title
+  immediately before capture, suppresses window-title JSON, and removes its
+  private stage/runtime trees. The SaneLot checkpoint receipt separately binds
+  the wrapper, helper runner, GUI runner/AppleScript/reclaimer, and screenshot
+  helper bytes before and after capture.
+- Mini proof is green: GUI runner **36/36**, locked evidence **2/2**, shell
+  syntax, and diff check. Independent review found no P0/P1; this is tool proof,
+  not SaneLot live-host or release proof.
 
 ## 2026-08-16 App Review/CWS watcher live recovery
 
