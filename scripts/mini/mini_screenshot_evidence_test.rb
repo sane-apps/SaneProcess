@@ -16,6 +16,13 @@ exit(run_tests('Mini Screenshot Evidence Tests') do
       assert_includes(WRAPPER, '--no-login-shell')
       assert_includes(WRAPPER, '/usr/bin/env -i')
       assert_includes(WRAPPER, 'if [ "$capture_status" -ne 0 ] && ! $locked_evidence; then')
+      locked_block = WRAPPER[/if \$locked_evidence; then\n  locked_cmd=.*?^elif \$use_local_runner/m]
+      assert(locked_block, 'locked evidence branch must be present')
+      assert_includes(locked_block, 'if running_in_ssh_session; then')
+      assert_includes(locked_block, 'runner_cmd="$cmd"')
+      assert_includes(WRAPPER, 'MINI_SCREENSHOT_REQUIRE_GUI_RUNNER')
+      assert(locked_block.index('running_in_ssh_session') < locked_block.index('REMOTE_MINI_GUI_RUN'),
+             'only an SSH-owned locked run may delegate through Terminal')
       true
     end
 

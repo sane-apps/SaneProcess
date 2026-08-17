@@ -357,7 +357,7 @@ running_on_mini() {
 }
 
 running_in_ssh_session() {
-  [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]
+  [ "${MINI_SCREENSHOT_REQUIRE_GUI_RUNNER:-0}" = "1" ] || [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]
 }
 
 printed_screenshot_path() {
@@ -380,10 +380,7 @@ REMOTE_MINI_GUI_RUN="$(expand_remote_home_path "$REMOTE_MINI_GUI_RUN" "$remote_h
 REMOTE_VISUAL_GUARD="$(expand_remote_home_path "$REMOTE_VISUAL_GUARD" "$remote_home")"
 
 # --- Screen recording (video) ---------------------------------------------
-# ffmpeg runs inside the Mini's logged-in GUI Terminal session (via
-# mini-gui-run.sh), the same granted context the screenshot path uses — the
-# only reliable way to capture the Mini screen over ssh (a direct ssh
-# ffmpeg/screencapture is blocked by TCC responsible-process attribution).
+# SSH video uses Mini GUI Terminal because direct ssh capture lacks TCC attribution.
 if $capture_video; then
   video_out="${video_out:-/tmp/mini-record.mp4}"
   screen_index="${MINI_SCREEN_AVF_INDEX:-2}" # avfoundation "Capture screen 0"
@@ -438,7 +435,11 @@ fi
 if $locked_evidence; then
   locked_cmd="$(remote_cmd /usr/bin/env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/private/tmp /bin/bash "$LOCKED_HELPER_RUNNER" --source "$LOCAL_SKILL_DIR" --expected-sha "$CWS_SCREENSHOT_EXPECTED_HELPER_SHA256" --activate-pid "$activate_pid" --window-title "$window_title" -- "$@")"
   cmd="${guard_cmd}${locked_cmd}"
-  runner_cmd="$(remote_cmd /bin/bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window --no-login-shell -- "$cmd")"
+  if running_in_ssh_session; then
+    runner_cmd="$(remote_cmd /bin/bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window --no-login-shell -- "$cmd")"
+  else
+    runner_cmd="$cmd"
+  fi
 elif $use_local_runner && ! running_in_ssh_session; then
   cmd="${guard_cmd}CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 bash ${REMOTE_HELPER_DIR}/ensure_macos_permissions.sh && CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 python3 ${REMOTE_HELPER_DIR}/take_screenshot.py ${forwarded_args}"
   runner_cmd="$cmd"
