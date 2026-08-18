@@ -11,7 +11,7 @@ MINI_HOST_FALLBACKS="${MINI_HOST_FALLBACKS:-stephansmac@Stephans-Mac-mini.local 
 MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS="${MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS:-120}"
 SKIP_CLEANUP=false
 use_local_runner=false
-locked_evidence=false
+locked_evidence=false preserve_frontmost=false
 activate_pid=""
 window_title=""
 print_usage() {
@@ -19,7 +19,7 @@ print_usage() {
 Usage:
   capture-mini-screenshot.sh -h|--help
   capture-mini-screenshot.sh [--skip-cleanup] desktop [--copy-to LOCAL_DIR] [helper args]
-  capture-mini-screenshot.sh [--locked-evidence] desktop [helper args]
+  capture-mini-screenshot.sh [--locked-evidence] [--preserve-frontmost | --activate-pid PID --window-title TITLE] desktop [helper args]
   capture-mini-screenshot.sh --video [--duration N] [--out PATH] [--copy-to DIR]
 Notes:
   Runs in the Mini's logged-in Terminal session. Default captures clean the desktop;
@@ -95,6 +95,7 @@ while [ $# -gt 0 ]; do
     --locked-evidence)
       locked_evidence=true
       ;;
+    --preserve-frontmost) preserve_frontmost=true ;;
     --activate-pid)
       shift; [ $# -gt 0 ] || usage; activate_pid="$1"
       ;;
@@ -226,7 +227,6 @@ resolve_mini_host() {
     candidates="${candidates}${candidate}
 "
   done
-
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
     if ssh -o BatchMode=yes -o ConnectTimeout=3 "$candidate" true >/dev/null 2>&1; then
@@ -236,13 +236,11 @@ resolve_mini_host() {
   done <<EOF
 $candidates
 EOF
-
   echo "Could not reach the canonical Mini host." >&2
   echo "Tried: ${candidates[*]}" >&2
   echo "Fix ~/.ssh/config or set MINI_HOST=user@host; do not use ad hoc screenshot paths." >&2
   return 1
 }
-
 run_remote_runner_with_timeout() {
   local timeout_seconds="$1"
   local host="$2"
@@ -252,7 +250,6 @@ run_remote_runner_with_timeout() {
   local pid=""
   local elapsed=0
   local status=1
-
   output_file="$(mktemp "/tmp/capture-mini-screenshot-output.XXXXXX")"
   status_file="$(mktemp "/tmp/capture-mini-screenshot-status.XXXXXX")"
 
@@ -401,15 +398,17 @@ if $capture_video; then
   exit 0
 fi
 
+$preserve_frontmost && ! $locked_evidence && { echo "--preserve-frontmost requires --locked-evidence." >&2; exit 1; }
 if $locked_evidence; then
   [ -n "${CWS_SCREENSHOT_EXPECTED_HELPER_SHA256:-}" ] || {
     echo "Locked screenshot evidence requires an expected helper hash." >&2
     exit 1
   }
-  [ -n "$activate_pid" ] && [ -n "$window_title" ] || {
-    echo "Locked screenshot evidence requires an exact Brave PID and window title." >&2
-    exit 1
-  }
+  if $preserve_frontmost; then
+    [ -z "$activate_pid" ] && [ -z "$window_title" ] || { echo "Locked preserve-frontmost evidence cannot also activate a window." >&2; exit 1; }
+  else
+    [ -n "$activate_pid" ] && [ -n "$window_title" ] || { echo "Locked screenshot evidence requires an exact Brave PID and window title." >&2; exit 1; }
+  fi
 elif $use_local_runner; then
   mkdir -p "$REMOTE_HELPER_DIR"
   rsync -az "$LOCAL_SKILL_DIR/" "${REMOTE_HELPER_DIR}/"
@@ -433,7 +432,8 @@ elif [ "$has_explicit_target" = false ]; then
   fi
 fi
 if $locked_evidence; then
-  locked_cmd="$(remote_cmd /usr/bin/env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/private/tmp /bin/bash "$LOCKED_HELPER_RUNNER" --source "$LOCAL_SKILL_DIR" --expected-sha "$CWS_SCREENSHOT_EXPECTED_HELPER_SHA256" --activate-pid "$activate_pid" --window-title "$window_title" -- "$@")"
+  $preserve_frontmost && locked_window_args=(--preserve-frontmost) || locked_window_args=(--activate-pid "$activate_pid" --window-title "$window_title")
+  locked_cmd="$(remote_cmd /usr/bin/env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/private/tmp /bin/bash "$LOCKED_HELPER_RUNNER" --source "$LOCAL_SKILL_DIR" --expected-sha "$CWS_SCREENSHOT_EXPECTED_HELPER_SHA256" "${locked_window_args[@]}" -- "$@")"
   cmd="${guard_cmd}${locked_cmd}"
   if running_in_ssh_session; then
     runner_cmd="$(remote_cmd /bin/bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window --no-login-shell -- "$cmd")"
