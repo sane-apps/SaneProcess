@@ -10,9 +10,10 @@ stage_dir=""
 runtime_dir=""
 activate_pid=""
 window_title=""
+preserve_frontmost=false
 
 usage() {
-  echo "Usage: mini-screenshot-evidence-helper.sh --source DIR --expected-sha SHA --activate-pid PID --window-title TITLE -- [screenshot args]" >&2
+  echo "Usage: mini-screenshot-evidence-helper.sh --source DIR --expected-sha SHA [--preserve-frontmost | --activate-pid PID --window-title TITLE] -- [screenshot args]" >&2
   exit 2
 }
 
@@ -38,6 +39,10 @@ while [ $# -gt 0 ]; do
       window_title="$2"
       shift 2
       ;;
+    --preserve-frontmost)
+      preserve_frontmost=true
+      shift
+      ;;
     --)
       shift
       break
@@ -52,8 +57,12 @@ case "$expected_sha" in
     ;;
   *) usage ;;
 esac
-case "$activate_pid" in ''|*[!0-9]*) usage ;; esac
-[ "$activate_pid" -gt 1 ] && [ -n "$window_title" ] && [ "${#window_title}" -le 300 ] || usage
+if $preserve_frontmost; then
+  [ -z "$activate_pid" ] && [ -z "$window_title" ] || usage
+else
+  case "$activate_pid" in ''|*[!0-9]*) usage ;; esac
+  [ "$activate_pid" -gt 1 ] && [ -n "$window_title" ] && [ "${#window_title}" -le 300 ] || usage
+fi
 
 validate_tree() {
   local directory="$1"
@@ -129,12 +138,16 @@ runtime_dir="$(/usr/bin/mktemp -d /private/tmp/sanelot-cws-screenshot-runtime.XX
 
 unset BASH_ENV CDPATH ENV GLOBIGNORE PYTHONHOME PYTHONPATH PYTHONSTARTUP
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="$runtime_dir"
+activate_exact_window() {
+  $preserve_frontmost && return 0
+  /usr/bin/swift -module-cache-path "$runtime_dir/swift-cache" \
+    "$stage_dir/cws_sticky_window_info.swift" --activate-pid "$activate_pid" \
+    --window-title "$window_title" >/dev/null
+}
 set +e
 CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 /bin/bash --noprofile --norc \
   "$stage_dir/ensure_macos_permissions.sh" && \
-/usr/bin/swift -module-cache-path "$runtime_dir/swift-cache" \
-  "$stage_dir/cws_sticky_window_info.swift" --activate-pid "$activate_pid" \
-  --window-title "$window_title" >/dev/null && \
+activate_exact_window && \
 CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 /usr/bin/python3 -I \
   "$stage_dir/take_screenshot.py" "$@"
 status=$?
