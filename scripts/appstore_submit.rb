@@ -1231,6 +1231,46 @@ end
 
 # ─── App Version Management ───
 
+APP_STORE_AUTOMATIC_RELEASE_TYPE = 'AFTER_APPROVAL'.freeze
+
+def ensure_automatic_app_store_release(version, token)
+  version_id = version&.fetch('id', nil).to_s
+  if version_id.empty?
+    log_error 'Cannot enforce automatic App Store release without a version ID.'
+    return false
+  end
+
+  current_type = version.dig('attributes', 'releaseType').to_s
+  return true if current_type == APP_STORE_AUTOMATIC_RELEASE_TYPE
+
+  body = {
+    data: {
+      type: 'appStoreVersions',
+      id: version_id,
+      attributes: { releaseType: APP_STORE_AUTOMATIC_RELEASE_TYPE }
+    }
+  }
+  updated = asc_patch("/appStoreVersions/#{version_id}", body: body, token: token)
+  unless updated
+    log_error "Failed to set App Store version #{version_id} to automatic release after approval."
+    return false
+  end
+
+  updated_type = updated.dig('data', 'attributes', 'releaseType').to_s
+  if updated_type.empty?
+    readback = asc_get("/appStoreVersions/#{version_id}", token: token)
+    updated_type = readback&.dig('data', 'attributes', 'releaseType').to_s
+  end
+
+  unless updated_type == APP_STORE_AUTOMATIC_RELEASE_TYPE
+    log_error "App Store version #{version_id} release mode read-back was #{updated_type.empty? ? 'missing' : updated_type}; expected #{APP_STORE_AUTOMATIC_RELEASE_TYPE}."
+    return false
+  end
+
+  log_info "App Store version #{version_id} will release automatically after approval."
+  true
+end
+
 def find_editable_version(app_id, asc_platform, version_string, token)
   # Look for an editable version.
   # READY_FOR_REVIEW still accepts metadata/screenshot updates in ASC for some flows.
@@ -1877,6 +1917,8 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
   version = find_editable_version(app_id, asc_platform, version_string, token)
   if version
     log_info "Found existing version #{version_string} (#{version.dig('attributes', 'appStoreState')})"
+    return nil unless ensure_automatic_app_store_release(version, token)
+
     return version['id']
   end
 
@@ -1892,6 +1934,8 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
     end
     if already_submitted
       state = already_submitted.dig('attributes', 'appStoreState')
+      return nil unless ensure_automatic_app_store_release(already_submitted, token)
+
       log_info "Version #{version_string} is already #{state} — nothing to do."
       return :already_submitted
     end
@@ -1904,7 +1948,8 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
       type: 'appStoreVersions',
       attributes: {
         platform: asc_platform,
-        versionString: version_string
+        versionString: version_string,
+        releaseType: APP_STORE_AUTOMATIC_RELEASE_TYPE
       },
       relationships: {
         app: {
@@ -1916,6 +1961,11 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
 
   resp = asc_post('/appStoreVersions', body: body, token: token)
   if resp && resp.dig('data', 'id')
+    unless ensure_automatic_app_store_release(resp['data'], token)
+      log_error "Created version #{version_string}, but automatic release verification failed."
+      return nil
+    end
+
     log_info "Created version #{version_string} (ID: #{resp['data']['id']})"
     resp['data']['id']
   else

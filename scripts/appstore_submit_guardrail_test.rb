@@ -367,6 +367,39 @@ class AppStoreBuildWaitHarness
   end
 end
 
+class AppStoreVersionReleaseHarness
+  attr_reader :get_paths, :patch_calls, :post_calls
+
+  def initialize(get_responses: {}, patch_response: nil, post_response: nil)
+    @get_responses = get_responses.transform_values do |responses|
+      responses.is_a?(Array) ? responses.dup : [responses]
+    end
+    @patch_response = patch_response
+    @post_response = post_response
+    @get_paths = []
+    @patch_calls = []
+    @post_calls = []
+  end
+
+  def asc_get(path, **_kwargs)
+    @get_paths << path
+    responses = @get_responses.fetch(path) { raise "missing get response for #{path}" }
+    raise "exhausted get responses for #{path}" if responses.empty?
+
+    responses.shift
+  end
+
+  def asc_patch(path, body:, **_kwargs)
+    @patch_calls << { path: path, body: body }
+    @patch_response
+  end
+
+  def asc_post(path, body:, **_kwargs)
+    @post_calls << { path: path, body: body }
+    @post_response
+  end
+end
+
 def build_metadata_config(
   marketing_url: nil,
   review_notes: 'Basic is free. This App Store build unlocks Pro with an in-app purchase. No external checkout or license key is used.'
@@ -451,6 +484,110 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         assert_eq(contact[:last_name], 'Joseph')
         assert_eq(contact[:email], 'hi@saneapps.com')
       end
+      true
+    end
+  end
+
+  test_category('Automatic App Store release') do
+    test('new versions explicitly request automatic release after approval') do
+      editable_path = '/apps/app-1/appStoreVersions?filter[platform]=IOS&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED,READY_FOR_REVIEW'
+      submitted_path = '/apps/app-1/appStoreVersions?filter[platform]=IOS&filter[appStoreState]=WAITING_FOR_REVIEW,IN_REVIEW'
+      harness = AppStoreVersionReleaseHarness.new(
+        get_responses: {
+          editable_path => { 'data' => [] },
+          submitted_path => { 'data' => [] }
+        },
+        post_response: {
+          'data' => {
+            'type' => 'appStoreVersions',
+            'id' => 'version-1',
+            'attributes' => { 'releaseType' => 'AFTER_APPROVAL' }
+          }
+        }
+      )
+
+      version_id = harness.send(:find_or_create_version, 'app-1', 'IOS', '1.2.3', 'stub-jwt')
+
+      assert_eq(version_id, 'version-1')
+      assert_eq(harness.post_calls.length, 1)
+      assert_eq(harness.post_calls.first[:path], '/appStoreVersions')
+      assert_eq(
+        harness.post_calls.first.dig(:body, :data, :attributes, :releaseType),
+        'AFTER_APPROVAL'
+      )
+      assert_eq(harness.patch_calls, [])
+      true
+    end
+
+    test('existing manual version is changed to automatic release and verified') do
+      editable_path = '/apps/app-1/appStoreVersions?filter[platform]=IOS&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED,READY_FOR_REVIEW'
+      harness = AppStoreVersionReleaseHarness.new(
+        get_responses: {
+          editable_path => {
+            'data' => [{
+              'type' => 'appStoreVersions',
+              'id' => 'version-1',
+              'attributes' => {
+                'versionString' => '1.2.3',
+                'appStoreState' => 'PREPARE_FOR_SUBMISSION',
+                'releaseType' => 'MANUAL'
+              }
+            }]
+          }
+        },
+        patch_response: {
+          'data' => {
+            'type' => 'appStoreVersions',
+            'id' => 'version-1',
+            'attributes' => { 'releaseType' => 'AFTER_APPROVAL' }
+          }
+        }
+      )
+
+      version_id = harness.send(:find_or_create_version, 'app-1', 'IOS', '1.2.3', 'stub-jwt')
+
+      assert_eq(version_id, 'version-1')
+      assert_eq(harness.patch_calls.length, 1)
+      assert_eq(harness.patch_calls.first[:path], '/appStoreVersions/version-1')
+      assert_eq(
+        harness.patch_calls.first.dig(:body, :data, :attributes, :releaseType),
+        'AFTER_APPROVAL'
+      )
+      true
+    end
+
+    test('automatic release fails closed when App Store Connect does not confirm it') do
+      harness = AppStoreVersionReleaseHarness.new(
+        get_responses: {
+          '/appStoreVersions/version-1' => {
+            'data' => {
+              'type' => 'appStoreVersions',
+              'id' => 'version-1',
+              'attributes' => { 'releaseType' => 'MANUAL' }
+            }
+          }
+        },
+        patch_response: {
+          'data' => {
+            'type' => 'appStoreVersions',
+            'id' => 'version-1',
+            'attributes' => {}
+          }
+        }
+      )
+
+      ok = harness.send(
+        :ensure_automatic_app_store_release,
+        {
+          'type' => 'appStoreVersions',
+          'id' => 'version-1',
+          'attributes' => { 'releaseType' => 'MANUAL' }
+        },
+        'stub-jwt'
+      )
+
+      assert_eq(ok, false)
+      assert_eq(harness.get_paths, ['/appStoreVersions/version-1'])
       true
     end
   end
