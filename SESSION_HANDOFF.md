@@ -1,8 +1,52 @@
 # SaneProcess Session Handoff
 
-As of: 2026-07-29 America/New_York
+As of: 2026-08-21 America/New_York
 Owner host: Mac Mini = tree truth; Air = controller.
 Repo: `~/SaneApps/infra/SaneProcess`
+
+## 2026-08-21 regular clients: Grok, Grokbot, Cursor
+
+- Owner: daily work is Grok, Grokbot, and Cursor. SaneProcess stays compatible
+  with Codex and Claude. Do not route regular jobs or new recurring work through
+  OpenAI/Anthropic. Recurring work uses SaneMaster/launchd plus Mini Grok
+  headless heartbeats. All Air and Mini Codex heartbeats are PAUSED after the
+  replacements were proven.
+- Proven 2026-08-21: Mini Grok heartbeat smoke (`PONG`); App+CWS review watch
+  GET-only (UTF-8 fix); SaneCite Monday sweep HTTP (Air, 0 failures); SaneBar
+  macOS 27 watch (still beta, no notify). X scout is now a Grok heartbeat, not
+  the paid X API. Launch-ops / Prophecy resume use the same Grok runner; not
+  executed fully this pass because they mutate inbox/batches.
+- NVIDIA weekly scout was not moved: `nvidia_eval` is not in SaneMaster and the
+  NVIDIA-agent rule forbids it unless the owner asks again. SaneClip 8am
+  release and SaneLot 1.2.1 live-auction gate stay retired/paused.
+- D-U-N-S reminder was a one-shot Codex nag; paused. Still an owner task if
+  SaneLot Google verification needs it.
+
+## 2026-08-21 keep-current: pins apply themselves, Grok wrappers stop drifting
+
+- Uncommitted SaneProcess work: `keep_current` on the existing `dependency_baseline.rb` lane. Weekly Air LaunchAgent `com.saneapps.keep-current` (Sunday 09:15) applies npm pins, auto-bumps `firecrawl-cli` within the same major, and notifies only on drift. Mini nightly applies Mini pins. Homebrew/Codex/Claude are not auto-upgraded; Claude `autoUpdates` is now on; Grok already auto-updates.
+- Grok wrappers now live in git `scripts/grok-bin/` (`cloudflare-mcp-remote.sh`, `xcode-mcp.sh`, `xcode-mcp-frame.py`). `sync_grok` overlays them and no longer `--delete`s `~/.grok/bin` (that was wiping the Grok CLI).
+- Air Grok apple-docs is HTTP `http://127.0.0.1:37911/mcp` through the existing AgentMemory tunnel, which now also forwards 37911/37913/37915. Xcode is the Mini HTTP singleton at `http://127.0.0.1:37915/mcp` (same pattern as apple-docs), not a fresh SSH stdio spawn. mcpbridge still needs Xcode open on Mini. Proven 2026-08-21: Mini `/healthz` ok, Air initialize HTTP 200. Restart Grok once so this session picks up the HTTP xcode server. Leftover Mini `com.saneapps.x-opportunity-scout` plist was removed; the live 10:00 job is the Grok heartbeat.
+- Firecrawl CLI is 1.23.1 with `firecrawl developer` and the `firecrawl-developer-index` skill. No Firecrawl MCP.
+
+## 2026-08-16 machine_cleanup hunts junk by kind, not free space
+
+- Owner correction: Air `machine_cleanup` was skipping generated junk because
+  the disk was marked healthy (451G free). Hygiene now plans unnecessary
+  generated dumps on any host regardless of free space. Disk pressure still
+  gates only expensive-to-restore caches (Playwright, HuggingFace,
+  `codex-runtimes`, npm/npx, simulator runtime images).
+- Air apply reclaimed the planned set (19.84G planned, 117/117 actions, Trash
+  emptied). SaneLot dropped from 14G to 1.3G after
+  `outputs/mini-storage-archive`, loose verify xcresults, and old run
+  xcresults were removed. SaneVideo container `tmp`, setapp_review, uv stale
+  archives, pnpm cache, and memory-sync backups are gone. Codex sessions,
+  SaneVideo Documents, Logos, Photos, and sim runtimes were left alone.
+- Nightly: Air `com.saneapps.machine-cleanup` at 05:40 runs
+  `machine_cleanup --host local --apply --quiet`. Mini
+  `com.saneapps.memory-guard` at 05:40 still runs the server reset. Planner
+  files were copied to the Mini checkout so tonight's Mini pass uses the new
+  rules. Diff is local/uncommitted.
 
 ## 2026-08-10 CWS watcher configuration-loss diagnosis and receipt hardening
 

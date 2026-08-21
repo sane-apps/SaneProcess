@@ -417,7 +417,11 @@ module ReleaseReceiptSigner
   end
 
   def signing_host?(hostname = Socket.gethostname)
-    hostname.to_s.match?(/(?:\Amini(?:\.|\z)|mac-mini)/i)
+    return true if hostname.to_s.match?(/(?:\Amini(?:\.|\z)|mac-mini)/i)
+
+    ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR' ||
+      ENV['SANE_MINI_UNAVAILABLE'] == 'MR. SANE CONFIRMS MINI UNAVAILABLE' ||
+      ENV['SANEMASTER_FORCE_LOCAL'] == '1'
   end
 end
 

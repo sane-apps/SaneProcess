@@ -108,7 +108,7 @@ exit(run_tests('Air Mini Acceptance Tests') do
       %w[air-process-access air-agentmemory-tunnel air-agentmemory-health air-agentmemory-search
          air-mini-lan air-mini-tailscale mini-air-return mini-dependencies
          mini-power mini-weekly-restart mini-agentmemory-health air-github-credential
-         mini-credential-consumers mini-mcp-apple-docs mini-mcp-macos-automator mini-mcp-serena mini-retired-training
+         mini-credential-consumers mini-mcp-apple-docs mini-mcp-macos-automator mini-mcp-xcode mini-mcp-serena mini-retired-training
          saneprocess-parity sanecite-parity memory-checksum-parity acceptance-contracts].each do |id|
         assert(ids.include?(id), "missing plan check #{id}")
       end

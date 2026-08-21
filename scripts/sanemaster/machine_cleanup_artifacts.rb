@@ -87,8 +87,58 @@ module SaneMasterModules
       '~/Desktop/Screenshots/email*-linked-media*',
       '~/Desktop/Screenshots/email[0-9]*'
     ].freeze
+    # Hygiene runs on every host, regardless of free space. These are generated
+    # dumps, not expensive restore caches and not customer documents.
+    HYGIENE_EXACT_PATHS = [
+      '~/SaneApps/release-work',
+      '~/SaneApps/release-publish',
+      '~/SaneApps/release-worktrees',
+      '~/SaneApps/tmp',
+      '~/SaneApps/scratch',
+      '~/SaneApps/outputs/setapp_review',
+      '~/SaneApps/outputs/automation-smoke',
+      '~/scratch',
+      '~/abtest-scratch',
+      '~/tmp_sanebar_release',
+      '~/tmp_sanebar_upgrade',
+      '~/.tmp_saneclip_upgrade_dd_v222',
+      '~/.tmp_saneclip_upgrade_dd_v223',
+      '~/.tmp_saneclip_upgrade_install',
+      '~/.codex/tmp',
+      '~/.codex/.tmp',
+      '~/.sanemaster/routed-workspaces',
+      '~/Library/Developer/XcodeBuildMCP/workspaces',
+      '~/.cache/saneapps-memory-sync-backups',
+      '~/SaneApps/apps/*/outputs/mini-storage-archive',
+      '~/SaneApps-automation/apps/*/outputs/mini-storage-archive',
+      '~/SaneApps/apps/*/outputs/verify/*.xcresult',
+      '~/SaneApps/apps/*/outputs/monitor-tests/*.xcresult',
+      '~/SaneApps-automation/apps/*/outputs/verify/*.xcresult',
+      '~/SaneApps-automation/apps/*/outputs/monitor-tests/*.xcresult',
+      '~/Library/Containers/com.sanevideo.SaneVideo/Data/tmp',
+      '~/Library/Containers/com.sanevideo.app/Data/tmp'
+    ].freeze
 
     private
+
+    def machine_cleanup_hygiene_targets(active, options)
+      protected_apps = machine_cleanup_protected_apps(active, options)
+      hygiene_exact_cleanup_paths.filter_map do |path|
+        next unless File.exist?(path)
+        next if protected_apps.include?(hygiene_app_name(path))
+
+        size_gb = path_size_gb(path)
+        next if size_gb <= 0.01
+
+        {
+          type: 'trash_path',
+          category: 'hygiene_generated_artifacts',
+          path: path,
+          size_gb: size_gb,
+          reason: 'Generated dump or leftover artifact; planned by kind, not free space.'
+        }
+      end
+    end
 
     def machine_cleanup_server_targets(active, options, pressure = true)
       return [] unless options[:server]
@@ -231,6 +281,7 @@ module SaneMasterModules
       return false if cleanup_path_uses_symlink?(expanded)
       return true if CLEANUP_SAFE_ROOTS.any? { |raw| expanded == File.expand_path(raw) || expanded.start_with?("#{File.expand_path(raw)}/") }
       return true if server_exact_cleanup_path?(expanded)
+      return true if hygiene_exact_cleanup_path?(expanded)
       return true if layout_litter_path_allowed?(expanded)
       return true if server_expensive_exact_paths.include?(expanded)
       return true if server_child_cleanup_paths.include?(expanded)
@@ -286,6 +337,39 @@ module SaneMasterModules
 
       SERVER_EXACT_CLEANUP_PATHS.any? do |raw|
         raw.match?(/[*?\[]/) && File.fnmatch?(File.expand_path(raw), File.expand_path(path), File::FNM_PATHNAME)
+      end
+    end
+
+    def hygiene_exact_cleanup_paths
+      HYGIENE_EXACT_PATHS.flat_map do |raw|
+        expanded = File.expand_path(raw)
+        raw.match?(/[*?\[]/) ? Dir.glob(expanded) : [expanded]
+      rescue SystemCallError
+        []
+      end.uniq
+    end
+
+    def hygiene_exact_cleanup_path?(path)
+      expanded = File.expand_path(path)
+      return true if hygiene_exact_cleanup_paths.include?(expanded)
+
+      HYGIENE_EXACT_PATHS.any? do |raw|
+        raw.match?(/[*?\[]/) && File.fnmatch?(File.expand_path(raw), expanded, File::FNM_PATHNAME)
+      end
+    end
+
+    def hygiene_app_name(path)
+      expanded = File.expand_path(path)
+      apps_root = File.expand_path('~/SaneApps/apps')
+      if expanded.start_with?("#{apps_root}/")
+        return expanded.delete_prefix("#{apps_root}/").split(File::SEPARATOR).first
+      end
+
+      case expanded
+      when %r{/Containers/com\.sanevideo\.SaneVideo/}
+        'SaneVideo'
+      when %r{/Containers/com\.sanevideo\.app/}
+        'SaneVideo'
       end
     end
 

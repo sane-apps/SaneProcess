@@ -328,6 +328,7 @@ module SaneAppsAirMiniAcceptance
       {
         'mini-mcp-apple-docs' => 37_911,
         'mini-mcp-macos-automator' => 37_913,
+        'mini-mcp-xcode' => 37_915,
         'mini-mcp-serena' => 37_917
       }.each do |id, port|
         payload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"sane-acceptance","version":"1"}}}'

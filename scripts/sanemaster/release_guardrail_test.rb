@@ -2889,12 +2889,20 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
     end
 
     test('customer UI receipt host accepts full Mini hostname') do
-      with_env('SANE_APPROVE_LOCAL_UI_ON_AIR' => nil) do
+      with_env('SANE_APPROVE_LOCAL_UI_ON_AIR' => nil, 'SANE_MINI_UNAVAILABLE' => nil) do
         assert(subject.send(:customer_ui_receipt_host_allowed?, 'mini'))
         assert(subject.send(:customer_ui_receipt_host_allowed?, 'stephans-mac-mini.local'))
         assert(subject.send(:customer_ui_receipt_host_allowed?, 'Stephans-Mac-Mini'))
         assert(!subject.send(:customer_ui_receipt_host_allowed?, 'stephansmac'))
         assert(!subject.send(:customer_ui_receipt_host_allowed?, 'macbook-air'))
+      end
+      true
+    end
+
+    test('customer UI Air fallback accepts Air host when Mini is unavailable') do
+      with_env('SANE_MINI_UNAVAILABLE' => 'MR. SANE CONFIRMS MINI UNAVAILABLE') do
+        assert(subject.send(:customer_ui_air_fallback_approved?))
+        assert(subject.send(:customer_ui_receipt_host_allowed?, 'stephans-macbook-air.local'))
       end
       true
     end

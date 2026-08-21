@@ -157,8 +157,8 @@ sudo tail -50 /var/log/sane-mini-weekly-restart.log
 | `mini-prepare-automation-root.sh` | On demand | Refreshes clean build/test automation clones |
 | `mini-install-nightly-agent.sh` | On demand | Installs the nightly build/report agent |
 | `mini-nightly.sh` | 8:45 AM daily | Builds/tests active repos and writes the nightly report |
-| `mini-memory-guard.sh` | 5:40 AM daily | Restart-free hygiene with bounded deep cleanup |
-| `mini-install-memory-guard.sh` | On demand | Installs the daily hygiene LaunchAgent |
+| `mini-memory-guard.sh` | 5:40 AM daily on Mini | Restart-free hygiene with bounded deep cleanup |
+| `mini-install-memory-guard.sh` | On demand | Mini: `com.saneapps.memory-guard`. Air: `com.saneapps.machine-cleanup` at 5:40 AM |
 | `mini-weekly-restart.sh` | Sunday retry windows | Root guarded weekly restart |
 | `mini-install-weekly-restart.sh` | On demand | Installs the root helper and LaunchDaemon |
 | `bootstrap-build-server.sh` | On demand | Proves headless signing and App Store credentials |

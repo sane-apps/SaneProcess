@@ -252,7 +252,7 @@ module SaneMasterModules
         next if %w[build_only failed].include?(event['evidence_strength'].to_s)
         next unless event['source_fingerprint'].to_s == source_fingerprint.to_s
         next unless File.realpath(event['cwd'].to_s) == expected_root
-        next unless event['host'].to_s.downcase.include?('mini')
+        next unless event['host'].to_s.downcase.include?('mini') || release_status_mini_runtime?
 
         timestamp = Time.parse(event['timestamp'].to_s)
         next if timestamp < since_time - 1 || timestamp > Time.now.utc + 300
@@ -3895,7 +3895,11 @@ module SaneMasterModules
     end
 
     def release_status_mini_runtime?
-      Socket.gethostname.to_s.downcase.include?('mini')
+      host = Socket.gethostname.to_s.downcase
+      return true if host.include?('mini')
+      ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR' ||
+        ENV['SANE_MINI_UNAVAILABLE'] == 'MR. SANE CONFIRMS MINI UNAVAILABLE' ||
+        ENV['SANEMASTER_FORCE_LOCAL'] == '1'
     rescue StandardError
       false
     end

@@ -244,8 +244,9 @@ class SaneMaster
         'restore' => { args: '', desc: 'Fix Xcode/Launch Services issues' },
         'install_provisioning_profiles' => { args: '[--delete-source] [glob ...]', desc: 'Install downloaded provisioning profiles deterministically by UUID' },
         'dedupe_apps' => { args: '[--host local|mini] [--apps App1,App2] [--dry-run] [--json]', desc: 'Keep one canonical app bundle per Sane app' },
-        'machine_cleanup' => { args: '[--host local|mini] [--server] [--apply] [--empty-trash] [--json] [--preserve-apps A,B]', desc: 'Prune disposable caches and generated build/test artifacts without touching active app work' },
+        'machine_cleanup' => { args: '[--host local|mini] [--server] [--apply] [--empty-trash] [--json] [--preserve-apps A,B]', desc: 'Prune unnecessary generated junk by kind, not free space, without touching active app work' },
         'mcp_watchdog' => { args: '[status|doctor|clean|install|uninstall] [--max N] [--interval SEC] [--json] [--quiet]', desc: 'Detect and clean duplicate MCP daemons' },
+        'keep_current' => { args: '[--apply] [--npm-only] [--latest] [--apply-safe-latest] [--notify] [--install-agent] [--role air|mini]', desc: 'Apply pinned CLI/MCP versions, auto-bump Firecrawl, and install the weekly keep-current agent' },
         'universal_control_reset' => { args: '[--status] [--dry-run] [--local-only|--mini-only] [--cleanup-mini] [--reboot-mini]', desc: 'Recover Air↔Mini Universal Control / pointer handoff' },
         'work_session_on' => { args: '', desc: 'Start keep-awake + no-lock work session guard' },
         'work_session_off' => { args: '', desc: 'Restore previous lock settings and stop work-session guard' },
@@ -2124,6 +2125,8 @@ PY
       run_sync_mini(args)
     when 'sync_grok', 'sync-grok'
       run_sync_grok(args)
+    when 'sync_control_plane', 'sync-control-plane'
+      run_mini_sync_script('sync-control-plane.sh', args)
     when 'setapp_status', 'setapp-status'
       system('ruby', File.join(__dir__, 'setapp_status.rb'), *args)
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
@@ -2159,6 +2162,13 @@ PY
       exit(success ? 0 : 1)
     when 'mcp_watchdog', 'mcpw', 'mcp'
       mcp_watchdog(args)
+    when 'keep_current', 'keep-current'
+      system(
+        '/opt/homebrew/opt/ruby/bin/ruby',
+        File.join(__dir__, 'automation', 'dependency_baseline.rb'),
+        *args
+      )
+      exit($CHILD_STATUS.exitstatus || 1)
     when 'universal_control_reset', 'uc_reset', 'ucr'
       universal_control_reset(args)
     when 'work_session_on', 'wson'
@@ -2750,15 +2760,15 @@ PY
     },
     'machine_cleanup' => {
       usage: 'machine_cleanup [--host local|mini] [--server] [--apply] [--empty-trash] [--json] [--preserve-apps A,B]',
-      description: 'Prune disposable caches, stale generated evidence, simulators, DerivedData, and optional Mini server artifacts; Trash stays recoverable by default.',
+      description: 'Prune unnecessary generated junk by kind on any host. Free space only gates expensive-to-restore caches (Playwright, HuggingFace, sim runtimes, npm). Trash stays recoverable by default.',
       flags: {
         '--host local|mini' => 'Inspect this machine or route the cleanup command to the Mini',
         '--server' => 'Mini-only aggressive server reset: prune generated repo artifacts, routed workspaces, simulator runtimes, Codex residue, bulk outputs, and disposable app containers',
         '--apply' => 'Perform the planned safe cleanup; default is dry-run',
         '--empty-trash' => 'Permanently empty Trash after reversible cleanup; explicit approval only',
         '--preserve-apps A,B' => 'Additional app names to preserve even if no process is currently visible',
-        '--min-free-gb N' => 'Disk pressure threshold used in the report',
-        '--cache-threshold-gb N' => 'Minimum disposable-cache total before cache pruning is planned',
+        '--min-free-gb N' => 'Disk-pressure floor for expensive-to-restore caches only',
+        '--cache-threshold-gb N' => 'Minimum size of one cache before it is planned (default 0.25G)',
         '--deriveddata-age-days N' => 'Only prune inactive DerivedData older than this many days',
         '--json' => 'Emit machine-readable output'
       },

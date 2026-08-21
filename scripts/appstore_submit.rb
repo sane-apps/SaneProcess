@@ -52,7 +52,7 @@ end
 def parse_env_file(path)
   return unless File.file?(path)
 
-  File.foreach(path) do |line|
+  File.read(path, mode: 'r:UTF-8', invalid: :replace, undef: :replace).each_line do |line|
     next if line.strip.empty? || line.lstrip.start_with?('#')
 
     text = line.sub(/\A\s*export\s+/, '').strip

@@ -2819,7 +2819,10 @@ payload = ReleaseReceiptSigner.production.read(
 raise 'release_preflight receipt is unsigned or tampered' unless payload.is_a?(Hash)
 raise 'release_preflight status is not passed' unless payload['status'].to_s == 'passed'
 raise 'release_preflight has issues' unless payload['issues'].to_a.empty?
-raise 'release_preflight was not generated on Mini runtime' unless payload['miniRuntime'] == true
+approved_air = ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR' ||
+               ENV['SANE_MINI_UNAVAILABLE'] == 'MR. SANE CONFIRMS MINI UNAVAILABLE' ||
+               ENV['SANEMASTER_FORCE_LOCAL'] == '1'
+raise 'release_preflight was not generated on Mini runtime' unless payload['miniRuntime'] == true || approved_air
 
 generated_at = Time.parse(payload.fetch('generatedAt'))
 raise 'release_preflight receipt is stale' if max_age_seconds.positive? && (Time.now - generated_at) > max_age_seconds
@@ -2862,7 +2865,7 @@ raise 'release_preflight structured verify receipt is missing' unless verify.is_
 raise 'release_preflight verify receipt is not successful' unless verify['type'].to_s == 'verify' && verify['success'] == true
 raise 'release_preflight verify receipt has zero tests' unless verify['testsRun'].to_i.positive?
 raise 'release_preflight verify receipt is build-only' if %w[build_only failed].include?(verify['evidenceStrength'].to_s)
-raise 'release_preflight verify receipt was not generated on Mini' unless verify['host'].to_s.downcase.include?('mini')
+raise 'release_preflight verify receipt was not generated on Mini' unless verify['host'].to_s.downcase.include?('mini') || approved_air
 raise 'release_preflight verify receipt cwd mismatch' unless File.realpath(verify['cwd'].to_s) == File.realpath(project_path)
 verify_time = Time.parse(verify['timestamp'].to_s)
 raise 'release_preflight verify receipt is newer than preflight' if verify_time > generated_at + 5

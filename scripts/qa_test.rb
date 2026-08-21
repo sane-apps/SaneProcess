@@ -47,6 +47,18 @@ class SaneProcessQATest < Minitest::Test
     assert_includes source, "capture_qa_command('ruby', hook_path, '--self-test', timeout: QA_SELF_TEST_TIMEOUT_SECONDS)"
   end
 
+  def test_global_claude_settings_have_no_bare_claude_env_interpolation
+    settings = File.read(File.expand_path('~/SaneApps/infra/SaneProcess/.claude/settings.json'), encoding: Encoding::UTF_8)
+
+    refute_match(/\$\{CLAUDECODE\}/, settings)
+    refute_match(/\$\{CLAUDE_CODE\}/, settings)
+    assert_includes settings, 'run_hook.sh session_start.rb'
+    assert_includes settings, 'run_hook.sh saneprompt.rb'
+    assert_includes settings, 'run_hook.sh sanetools.rb'
+    assert_includes settings, 'run_hook.sh sanetrack.rb'
+    assert_includes settings, 'run_hook.sh sanestop.rb'
+  end
+
   def test_hook_registration_accepts_run_hook_wrapper
     source = File.read(File.join(__dir__, 'qa.rb'), encoding: Encoding::UTF_8)
 
