@@ -77,13 +77,22 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(runner_source, 'return "idle"')
       assert_includes(runner_source, 'launch_grace_seconds="${MINI_GUI_RUN_LAUNCH_GRACE_SECONDS:-8}"')
       assert_includes(runner_source, 'inner_script_path="$tmp_dir/command.sh"')
-      assert_includes(runner_source, 'terminal_command="bash $(shell_quote "$inner_script_path")"')
+      assert_includes(runner_source, 'terminal_command="/bin/bash $(shell_quote "$inner_script_path")"')
       assert_includes(runner_source, 'started_file="${status_file}.started"')
       assert_includes(runner_source, 'printf \'%s\\n\' "\\$\\$" > $(shell_quote "$started_file")')
       assert_includes(runner_source, '[ ! -f "$started_file" ] && [ "$elapsed_since_launch" -lt "$launch_grace_seconds" ]')
       assert_includes(runner_source, 'idle_poll_count=$((idle_poll_count + 1))')
       assert_includes(runner_source, '[ "$idle_poll_count" -ge 2 ] && break')
       assert_includes(runner_source, 'mini-gui-run: command finished without a status file')
+      true
+    end
+
+    test('runner supports a clean non-login shell for release evidence') do
+      assert_includes(runner_source, '--no-login-shell')
+      assert_includes(runner_source, 'no_login_shell=1')
+      assert_includes(runner_source, '/usr/bin/env -i HOME=')
+      assert_includes(runner_source, '/bin/bash --noprofile --norc -c')
+      assert_includes(runner_source, 'terminal_command="/bin/bash ')
       true
     end
 
@@ -273,8 +282,8 @@ exit(run_tests('Mini GUI Runner Tests') do
     test('capture wrapper avoids local Codex-to-Terminal automation prompts') do
       assert_includes(screenshot_wrapper_source, 'guard_env=""')
       assert_includes(screenshot_wrapper_source, 'guard_env="MINI_VISUAL_AVOID_TERMINAL_AUTOMATION=1 "')
-      assert_includes(screenshot_wrapper_source, '${guard_env}bash ${REMOTE_VISUAL_GUARD} --desktop --cleanup')
-      assert_includes(screenshot_wrapper_source, '${guard_env}bash ${REMOTE_VISUAL_GUARD} --cleanup --app')
+      assert_includes(screenshot_wrapper_source, '${guard_env}/bin/bash ${REMOTE_VISUAL_GUARD} --desktop --cleanup')
+      assert_includes(screenshot_wrapper_source, '${guard_env}/bin/bash ${REMOTE_VISUAL_GUARD} --cleanup --app')
       assert_includes(visual_guard_source, 'avoid_terminal_automation()')
       assert_includes(visual_guard_source, 'MINI_VISUAL_AVOID_TERMINAL_AUTOMATION')
       assert_includes(visual_guard_source, 'avoid_terminal_automation && return 0')

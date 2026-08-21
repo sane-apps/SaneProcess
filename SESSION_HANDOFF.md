@@ -24,10 +24,34 @@ Repo: `~/SaneApps/infra/SaneProcess`
 
 ## 2026-08-21 keep-current: pins apply themselves, Grok wrappers stop drifting
 
-- Uncommitted SaneProcess work: `keep_current` on the existing `dependency_baseline.rb` lane. Weekly Air LaunchAgent `com.saneapps.keep-current` (Sunday 09:15) applies npm pins, auto-bumps `firecrawl-cli` within the same major, and notifies only on drift. Mini nightly applies Mini pins. Homebrew/Codex/Claude are not auto-upgraded; Claude `autoUpdates` is now on; Grok already auto-updates.
-- Grok wrappers now live in git `scripts/grok-bin/` (`cloudflare-mcp-remote.sh`, `xcode-mcp.sh`, `xcode-mcp-frame.py`). `sync_grok` overlays them and no longer `--delete`s `~/.grok/bin` (that was wiping the Grok CLI).
-- Air Grok apple-docs is HTTP `http://127.0.0.1:37911/mcp` through the existing AgentMemory tunnel, which now also forwards 37911/37913/37915. Xcode is the Mini HTTP singleton at `http://127.0.0.1:37915/mcp` (same pattern as apple-docs), not a fresh SSH stdio spawn. mcpbridge still needs Xcode open on Mini. Proven 2026-08-21: Mini `/healthz` ok, Air initialize HTTP 200. Restart Grok once so this session picks up the HTTP xcode server. Leftover Mini `com.saneapps.x-opportunity-scout` plist was removed; the live 10:00 job is the Grok heartbeat.
-- Firecrawl CLI is 1.23.1 with `firecrawl developer` and the `firecrawl-developer-index` skill. No Firecrawl MCP.
+- Weekly Air LaunchAgent `com.saneapps.keep-current` (Sunday 09:15) applies npm
+  pins, auto-bumps `firecrawl-cli` within the same major, and notifies only on
+  drift. Mini nightly applies Mini pins. Homebrew/Codex/Claude are not
+  auto-upgraded; Claude `autoUpdates` is now on; Grok already auto-updates.
+- Grok wrappers live in git `scripts/grok-bin/` (`cloudflare-mcp-remote.sh`,
+  `xcode-mcp.sh`, `xcode-mcp-frame.py`). `sync_grok` overlays them and no longer
+  `--delete`s `~/.grok/bin` (that was wiping the Grok CLI).
+- Air Grok apple-docs is HTTP `http://127.0.0.1:37911/mcp` through the existing
+  AgentMemory tunnel, which also forwards 37911/37913/37915. Xcode is the Mini
+  HTTP singleton at `http://127.0.0.1:37915/mcp`, not a fresh SSH stdio spawn.
+  mcpbridge still needs Xcode open on Mini. Proven 2026-08-21: Mini `/healthz`
+  ok, Air initialize HTTP 200, live Grok `XcodeListWindows` returned Mini
+  SaneHosts. Leftover Mini `com.saneapps.x-opportunity-scout` plist was
+  removed; the live 10:00 job is the Grok heartbeat.
+- Firecrawl CLI is 1.23.1 with `firecrawl developer` and the
+  `firecrawl-developer-index` skill. No Firecrawl MCP.
+
+## 2026-08-21 native Grok/Cursor hooks, Codex/Claude stay adapters
+
+- Grok was importing Claude `settings.json` hooks. Those scripts read
+  `tool_name == "Bash"` and no-op on `GROK_HOOK_EVENT`, so Grok shell guards
+  never saw `toolName: run_terminal_command`. Native Grok hooks live in
+  `~/.grok/hooks/sane-guards.json` (git source `scripts/hooks/grok/hooks.json`).
+  Grok `compat.claude` / `compat.cursor` hook import is off so the Claude SOP
+  no-ops do not paint every tool. Shared payload adapter:
+  `scripts/hooks/core/hook_payload.rb`. Cursor `~/.cursor/hooks.json` still
+  runs the Cursor adapters. Claude `.claude/settings.json` and Codex stay on
+  their own registrations.
 
 ## 2026-08-16 machine_cleanup hunts junk by kind, not free space
 
@@ -46,7 +70,35 @@ Repo: `~/SaneApps/infra/SaneProcess`
   `machine_cleanup --host local --apply --quiet`. Mini
   `com.saneapps.memory-guard` at 05:40 still runs the server reset. Planner
   files were copied to the Mini checkout so tonight's Mini pass uses the new
-  rules. Diff is local/uncommitted.
+  rules.
+
+## 2026-08-17 locked Mini screenshot evidence lane
+
+- `capture-mini-screenshot.sh --locked-evidence` now preserves nonzero helper
+  failures, runs through a clean non-login GUI shell, and delegates to a fresh
+  private byte-bound helper tree rather than the shared `/tmp` copy.
+- `mini-screenshot-evidence-helper.sh` validates and copies the exact helper
+  inventory, uses absolute system tools, re-raises the exact Brave PID/title
+  immediately before capture, suppresses window-title JSON, and removes its
+  private stage/runtime trees. The SaneLot checkpoint receipt separately binds
+  the wrapper, helper runner, GUI runner/AppleScript/reclaimer, and screenshot
+  helper bytes before and after capture.
+- Mini proof is green: GUI runner **36/36**, locked evidence **2/2**, shell
+  syntax, and diff check. Independent review found no P0/P1; this is tool proof,
+  not SaneLot live-host or release proof.
+
+## 2026-08-16 App Review/CWS watcher live recovery
+
+- The shared 15-minute Mini heartbeat is ACTIVE and still runs only the two
+  canonical GET-only Apple and Chrome Web Store watchers. Its governing-file
+  path was corrected through `automation_update` from the nonexistent
+  `/Users/stephansmac/SaneApps/AGENTS.md` to
+  `/Users/stephansmac/AGENTS.md`; cadence, target task, mutation prohibitions,
+  pending-alert retry behavior, and model inheritance were preserved.
+- A fresh paired Mini run returned status `ok` for both watchers with zero
+  delivered, zero pending, and no diagnostics. The CWS OAuth refresh path also
+  returned `official_get: ok`; the current dashboard revision remains rejected
+  1.2.0 until the separately gated 1.2.1 submission.
 
 ## 2026-08-10 CWS watcher configuration-loss diagnosis and receipt hardening
 
@@ -72,15 +124,10 @@ Repo: `~/SaneApps/infra/SaneProcess`
   refresh exchanges while retaining compatibility when one exists. Focused
   proof is green: OAuth 9/9, CWS watcher 23/23, App Review watcher 24/24,
   automation guard 32/32, Ruby syntax, and `git diff --check`.
-- Remaining external gate: complete the exact read-only grant with
-  `cws_oauth_authorize.rb` in the existing authenticated Mini Brave session,
-  then require `cws_review_watch.rb --health-get` to return `official_get: ok`.
-  The active automation prompt also
-  names missing `/Users/stephansmac/SaneApps/AGENTS.md`; two attempts to update
-  that path through `automation_update` did not mutate the record, so the
-  automation control plane is blocked pending a healthy update route. Do not
-  hand-edit its TOML, change its cadence/thread, or create a substitute
-  scheduler.
+- Resolved 2026-08-16: the exact read-only grant now returns
+  `official_get: ok`, and `automation_update` corrected the governing-file path
+  while preserving the existing cadence and target task. No substitute
+  scheduler or direct TOML mutation was used.
 
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.

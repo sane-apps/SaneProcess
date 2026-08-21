@@ -59,6 +59,7 @@ title="Mini GUI Run"
 reclaim_all=0
 restore_frontmost=0
 restore_bundle_id=""
+no_login_shell=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -98,6 +99,10 @@ while [ $# -gt 0 ]; do
       close_window=1
       shift
       ;;
+    --no-login-shell)
+      no_login_shell=1
+      shift
+      ;;
     --poll-seconds)
       [ $# -ge 2 ] || usage
       poll_seconds="$2"
@@ -119,6 +124,10 @@ command_string="$*"
 window_title="${AUTOMATION_WINDOW_PREFIX}${title}"
 quoted_command="$(shell_quote "$command_string")"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mini-gui-run.XXXXXX")"
+command_shell="bash -lc"
+if [ "$no_login_shell" -eq 1 ]; then
+  command_shell="/usr/bin/env -i HOME=$(shell_quote "$HOME") USER=$(shell_quote "$(id -un)") LOGNAME=$(shell_quote "$(id -un)") PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/private/tmp /bin/bash --noprofile --norc -c"
+fi
 
 if [ -z "$log_file" ]; then
   log_file="$tmp_dir/output.log"
@@ -153,7 +162,7 @@ printf '%s\n' "\$\$" > $(shell_quote "$started_file")
 printf '\\033]1;%s\\007\\033]2;%s\\007' $(shell_quote "$window_title") $(shell_quote "$window_title")
 set -o pipefail
 sleep $(shell_quote "$start_delay_seconds")
-bash -lc ${quoted_command} 2>&1 | tee -a $(shell_quote "$log_file")
+${command_shell} ${quoted_command} 2>&1 | tee -a $(shell_quote "$log_file")
 __mini_gui_status=\${PIPESTATUS[0]}
 printf '%s\n' "\$__mini_gui_status" > $(shell_quote "$status_file")
 exit "\$__mini_gui_status"
@@ -163,7 +172,7 @@ EOF
 inner_script_path="$tmp_dir/command.sh"
 printf '%s\n' "$inner_script" > "$inner_script_path"
 chmod 700 "$inner_script_path"
-terminal_command="bash $(shell_quote "$inner_script_path")"
+terminal_command="/bin/bash $(shell_quote "$inner_script_path")"
 focus_mode="finder"
 [ "$restore_frontmost" -eq 1 ] && focus_mode="restore-frontmost"
 if [ -n "$restore_bundle_id" ]; then

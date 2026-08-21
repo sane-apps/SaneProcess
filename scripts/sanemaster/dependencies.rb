@@ -184,7 +184,7 @@ module SaneMasterModules
       max_per_server = 6
       per_codex_server_cap = DEFAULT_PER_CODEX_SERVER_CAP
       duplicate_grace_seconds = 900
-      interval_seconds = 300
+      interval_seconds = 1800
 
       i = 0
       while i < args.length
@@ -262,6 +262,7 @@ module SaneMasterModules
       ['macos-automator', /macos-automator/i],
       ['serena', /serena start-mcp-server|github\.com\/oraios\/serena/i],
       ['chroma', /chroma-mcp/i],
+      ['mcp-remote', %r{(?:^|[\s/])mcp-remote(?:\s|$)}],
       ['generic-mcp', /npx\/.*\/mcp|mcp-server\.cjs|worker-service\.cjs/i]
     ].freeze
 
@@ -275,7 +276,8 @@ module SaneMasterModules
       'central-memory' => 4,
       'macos-automator' => 4,
       'chroma' => 4,
-      'generic-mcp' => 4
+      'generic-mcp' => 4,
+      'mcp-remote' => 32
     }.freeze
     SERVER_NAME_ALIASES = {}.freeze
 
@@ -543,6 +545,8 @@ module SaneMasterModules
       end
 
       instances.group_by { |instance| instance[:server] }.each do |server, server_instances|
+        next if session_owned_remote_server?(server)
+
         server_cap = cap_for_server(server, max_per_server)
         next unless server_instances.length > server_cap
 
@@ -684,6 +688,10 @@ module SaneMasterModules
 
     def cap_for_server(server, max_per_server)
       [max_per_server.to_i, SERVER_SAFE_CAPS.fetch(server, max_per_server.to_i)].max
+    end
+
+    def session_owned_remote_server?(server)
+      server.to_s == 'mcp-remote'
     end
 
     def print_mcp_watchdog_status(analysis, max_per_server)
