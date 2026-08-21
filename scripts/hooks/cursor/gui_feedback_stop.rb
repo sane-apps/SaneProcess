@@ -26,7 +26,11 @@ followup = SaneGuiFeedback.cursor_stop_followup(
 )
 
 if followup
-  puts({ followup_message: followup }.to_json)
+  if ENV['GROK_HOOK_EVENT'].to_s != ''
+    puts({ decision: 'block', reason: followup }.to_json)
+  else
+    puts({ followup_message: followup }.to_json)
+  end
 else
   puts '{}'
 end

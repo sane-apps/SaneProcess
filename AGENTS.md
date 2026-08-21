@@ -5,8 +5,10 @@ agent overlay, not the full runbook. Detailed implementation, release, Mini,
 and operator setup notes live in `DEVELOPMENT.md`, `ARCHITECTURE.md`,
 `DEVELOPER_SETUP.md`, `templates/RELEASE_SOP.md`, and `scripts/`.
 
-Regular daily work is Grok, Grokbot, and Cursor. Keep Codex/Claude hook adapters
-working. Do not send regular jobs to OpenAI or Anthropic unless the owner asks.
+Regular daily work is Grok, Grokbot, and Cursor. Grok uses native
+`~/.grok/hooks` (git source `scripts/hooks/grok/hooks.json`). Cursor uses
+`~/.cursor/hooks.json`. Keep Codex/Claude hook adapters working. Do not send
+regular jobs to OpenAI or Anthropic unless the owner asks.
 
 Speak plainly and briefly. Use singular voice for SaneApps communications:
 `I`, `me`, `my`; never `we`, `us`, or `our`.

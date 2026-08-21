@@ -59,6 +59,15 @@ class SaneProcessQATest < Minitest::Test
     assert_includes settings, 'run_hook.sh sanestop.rb'
   end
 
+  def test_native_grok_hooks_register_shared_guards
+    grok_hooks = File.read(File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/grok/hooks.json'), encoding: Encoding::UTF_8)
+
+    assert_includes grok_hooks, 'run_terminal_command'
+    assert_includes grok_hooks, 'sane_catastrophic_guard.rb'
+    assert_includes grok_hooks, 'sane_bash_guards.rb'
+    assert_includes grok_hooks, 'sane_layout_guard.rb'
+  end
+
   def test_hook_registration_accepts_run_hook_wrapper
     source = File.read(File.join(__dir__, 'qa.rb'), encoding: Encoding::UTF_8)
 

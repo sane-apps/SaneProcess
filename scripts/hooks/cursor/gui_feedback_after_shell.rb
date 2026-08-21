@@ -21,8 +21,16 @@ rescue JSON::ParserError
   {}
 end
 
-command = payload['command'] || payload.dig('input', 'command') || ''
-output = payload['output'] || payload['stdout'] || ''
+command = payload['command'] ||
+          payload.dig('input', 'command') ||
+          payload.dig('toolInput', 'command') ||
+          payload.dig('tool_input', 'command') ||
+          ''
+output = payload['output'] ||
+         payload['stdout'] ||
+         payload['toolResult'] ||
+         payload['tool_result'] ||
+         ''
 
 result = SaneGuiFeedback.cursor_after_shell_payload(command: command, output: output)
 puts((result || {}).to_json)

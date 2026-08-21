@@ -10,6 +10,10 @@ Files:
 - `cloudflare-mcp-remote.sh` — token-backed Cloudflare admin MCP (`~/.config/nv/env` then Keychain)
 - `xcode-mcp.sh` / `xcode-mcp-frame.py` — Mini `mcpbridge`. Air Grok uses the Mini HTTP singleton at `http://127.0.0.1:37915/mcp` through the AgentMemory tunnel. `--framed` is the Content-Length path for that singleton.
 
+Native Grok safety hooks are not in this bin dir. Git source is
+`scripts/hooks/grok/hooks.json`, installed to `~/.grok/hooks/sane-guards.json`
+by `sync_grok`.
+
 Do not edit only `~/.grok/bin/*` and call it done. `sync_grok` overlays these helpers onto `~/.grok/bin` and must never `--delete` that directory (the official Grok CLI binary lives there).
 
 Canonical workflow:

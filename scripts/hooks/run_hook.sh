@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Shared Claude-native hook adapter.
-# Call this from settings.json instead of inlining ${CLAUDECODE}:
-# Grok imports Claude hooks and treats ${VAR} as a required env interpolation,
-# which paints every tool call as a failed hook.
+# Claude SOP hook adapter. Call this from Claude settings.json instead of
+# inlining ${CLAUDECODE}. Grok no longer imports Claude hooks; it uses native
+# ~/.grok/hooks (scripts/hooks/grok/hooks.json). Keep this wrapper so a leftover
+# ${VAR} in Claude settings cannot fail-open as a required env on any client.
 set -u
 
 hook_name="${1:-}"

@@ -82,6 +82,16 @@ mkdir -p "$LOCAL_GROK_BIN_DIR"
 rsync -az "$REPO_GROK_BIN_DIR/" "$LOCAL_GROK_BIN_DIR/" || die "rsync of local grok-bin failed"
 log "  + grok-bin helpers synced locally"
 
+REPO_GROK_HOOKS="$REPO_ROOT/scripts/hooks/grok/hooks.json"
+LOCAL_GROK_HOOKS_DIR="$LOCAL_GROK_DIR/hooks"
+if [[ -f "$REPO_GROK_HOOKS" ]]; then
+  mkdir -p "$LOCAL_GROK_HOOKS_DIR"
+  rsync -az "$REPO_GROK_HOOKS" "$LOCAL_GROK_HOOKS_DIR/sane-guards.json" || die "rsync of local grok hooks failed"
+  ssh "$MINI_HOST" "mkdir -p ~/.grok/hooks" 2>/dev/null || true
+  rsync -az "$REPO_GROK_HOOKS" "$MINI_HOST:~/.grok/hooks/sane-guards.json" 2>/dev/null || log "  ! grok hooks rsync to mini (non-fatal if mini not reachable)"
+  log "  + native Grok hooks synced locally and mirrored to mini"
+fi
+
 if [[ -f "$LOCAL_GROK_CONFIG" ]]; then
   ssh "$MINI_HOST" "mkdir -p ~/.grok" 2>/dev/null || true
   rsync -az "$LOCAL_GROK_CONFIG" "$MINI_HOST:~/.grok/config.toml" 2>/dev/null || log "  ! ~/.grok/config.toml rsync to mini failed (restart Grok after manual sync)"

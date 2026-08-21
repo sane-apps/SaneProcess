@@ -19,6 +19,7 @@
 require 'json'
 require 'shellwords'
 require 'time'
+require_relative 'core/hook_payload'
 
 CLEARANCE_DIR = File.expand_path('~/.claude/ship_clearance')
 CLEARANCE_TTL_SECONDS = 4 * 3600 # 4 hours
@@ -75,15 +76,15 @@ def release_relevant_commits_changed?(project_dir, old_sha, current_sha)
 end
 
 begin
-  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
-rescue JSON::ParserError, Errno::ENOENT
+  parsed = SaneHookPayload.parse($stdin.read.force_encoding(Encoding::UTF_8))
+rescue Errno::ENOENT
   exit 0
 end
 
-tool_name = input['tool_name']
-exit 0 unless tool_name == 'Bash'
+tool_name = parsed['tool_name']
+exit 0 unless SaneHookPayload.shell?(tool_name) || (tool_name.empty? && !parsed['command'].empty?)
 
-command = (input['tool_input'] || {})['command'].to_s
+command = parsed['command']
 exit 0 if command.empty?
 
 def shell_unquote(value)
