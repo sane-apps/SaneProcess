@@ -23,6 +23,7 @@ SANEMASTER_SCRIPT="$CANONICAL_SOURCE_ROOT/infra/SaneProcess/scripts/SaneMaster.r
 VERIFY_TIMEOUT_SECONDS="${MINI_NIGHTLY_VERIFY_TIMEOUT_SECONDS:-1800}"
 CLEANUP_TIMEOUT_SECONDS="${MINI_NIGHTLY_CLEANUP_TIMEOUT_SECONDS:-1200}"
 OPERATOR_BRIEF_TIMEOUT_SECONDS="${MINI_NIGHTLY_OPERATOR_BRIEF_TIMEOUT_SECONDS:-120}"
+KEEP_CURRENT_TIMEOUT_SECONDS="${MINI_NIGHTLY_KEEP_CURRENT_TIMEOUT_SECONDS:-300}"
 LOCK_DIR="$OUTPUT_DIR/.nightly.lock"
 LOCK_OWNER_FILE="$LOCK_DIR/owner.pid"
 VERIFY_RESULTS="$OUTPUT_DIR/.nightly-verify-results.$$"
@@ -48,6 +49,7 @@ require_positive_integer() {
 require_positive_integer MINI_NIGHTLY_VERIFY_TIMEOUT_SECONDS "$VERIFY_TIMEOUT_SECONDS"
 require_positive_integer MINI_NIGHTLY_CLEANUP_TIMEOUT_SECONDS "$CLEANUP_TIMEOUT_SECONDS"
 require_positive_integer MINI_NIGHTLY_OPERATOR_BRIEF_TIMEOUT_SECONDS "$OPERATOR_BRIEF_TIMEOUT_SECONDS"
+require_positive_integer MINI_NIGHTLY_KEEP_CURRENT_TIMEOUT_SECONDS "$KEEP_CURRENT_TIMEOUT_SECONDS"
 VERIFY_OUTER_TIMEOUT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 60))
 
 mkdir -p "$OUTPUT_DIR" "$VERIFY_LOG_DIR"
@@ -367,7 +369,43 @@ echo "**Uptime:** $(uptime | sed 's/.*up /up /' | sed 's/,.*//')" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Section 5: Bounded operator brief
+# Section 5: Keep pinned MCP/CLI tools current
+# =============================================================================
+echo "## Keep Current" >> "$REPORT"
+echo "" >> "$REPORT"
+
+KEEP_CURRENT_SCRIPT="$CANONICAL_SOURCE_ROOT/infra/SaneProcess/scripts/automation/dependency_baseline.rb"
+keep_current_exit=0
+keep_current_log="$OUTPUT_DIR/nightly-keep-current.log"
+
+if [ ! -f "$KEEP_CURRENT_SCRIPT" ]; then
+  echo "**Skipped** - missing dependency_baseline.rb" >> "$REPORT"
+else
+  run_bounded_command \
+    "$KEEP_CURRENT_TIMEOUT_SECONDS" \
+    "$CANONICAL_SOURCE_ROOT/infra/SaneProcess" \
+    "$keep_current_log" \
+    /opt/homebrew/opt/ruby/bin/ruby "$KEEP_CURRENT_SCRIPT" \
+    --apply --npm-only --latest --role mini || keep_current_exit=$?
+  if [ "$keep_current_exit" -eq 0 ]; then
+    echo "**PASS** - Mini npm pins applied" >> "$REPORT"
+  elif [ "$keep_current_exit" -eq 124 ]; then
+    echo "**FAIL** - keep-current timed out after ${KEEP_CURRENT_TIMEOUT_SECONDS}s" >> "$REPORT"
+  else
+    echo "**FAIL** (exit $keep_current_exit) - Mini dependency pins drifted" >> "$REPORT"
+  fi
+  if [ -s "$keep_current_log" ]; then
+    echo '```' >> "$REPORT"
+    tail -40 "$keep_current_log" >> "$REPORT"
+    echo '```' >> "$REPORT"
+  fi
+fi
+echo "" >> "$REPORT"
+echo "---" >> "$REPORT"
+echo "" >> "$REPORT"
+
+# =============================================================================
+# Section 6: Bounded operator brief
 # =============================================================================
 echo "## Operator Brief" >> "$REPORT"
 echo "" >> "$REPORT"

@@ -153,7 +153,7 @@ exit(run_tests('SaneMaster Machine Cleanup Retention Tests') do
       end
     end
 
-    test('only canonical Mini pressure prunes canonical runs and protected apps remain intact') do
+    test('prunes old generated evidence on any host; protected apps and noncanonical runs stay') do
       with_retention_home do |home|
         repo = File.join(home, 'SaneApps/apps/SaneLot')
         verify = File.join(repo, 'outputs/verify')
@@ -167,24 +167,33 @@ exit(run_tests('SaneMaster Machine Cleanup Retention Tests') do
         end
         noncanonical = create_evidence_run(verify, 'manual-debug-run', ['test.xcresult'], old_time)
         sizes[File.join(noncanonical, 'test.xcresult')] = 1.0
-        subject = MachineCleanupRetentionHarness.new(sizes: sizes)
+        subject = MachineCleanupRetentionHarness.new(
+          sizes: sizes,
+          snapshots: [{
+            ok: true,
+            available_gb: 80,
+            available_bytes: 80 * 1024 * 1024 * 1024,
+            capacity: '20%'
+          }]
+        )
 
         protected = subject.send(
           :machine_cleanup_evidence_targets,
           { apps: {} },
           retention_options.merge(preserve_apps: ['SaneLot']),
-          true
+          false
         )
         subject.define_singleton_method(:running_on_mini_host?) { false }
         local = subject.send(
           :machine_cleanup_evidence_targets,
           { apps: {} },
           retention_options.merge(preserve_apps: []),
-          true
+          false
         )
 
         assert(protected.all? { |action| action[:type] == 'skip' }, 'protected app evidence must not be pruned')
-        assert_eq(local, [])
+        assert(!local.empty?, 'Air and healthy-disk hosts must still prune leftover verify artifacts')
+        assert(!local.any? { |action| action[:path].to_s.include?('manual-debug-run') })
         assert_eq(subject.send(:machine_cleanup_safe_path?, File.join(noncanonical, 'test.xcresult')), false)
         assert_eq(subject.send(:machine_cleanup_safe_path?, File.join(runs.first, 'test.xcresult')), true)
       end

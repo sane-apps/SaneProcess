@@ -132,7 +132,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb; else exit 0; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh session_start.rb",
             "timeout": 5
           }
         ]
@@ -143,7 +143,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb; else exit 0; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh saneprompt.rb",
             "timeout": 5
           }
         ]
@@ -154,7 +154,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb; else exit 0; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanetools.rb",
             "timeout": 5
           }
         ]
@@ -165,7 +165,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb; else exit 0; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanetrack.rb",
             "timeout": 5
           }
         ]
@@ -176,7 +176,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb; else exit 0; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh task_completed_gate.rb",
             "timeout": 5
           }
         ]
@@ -187,7 +187,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb; else exit 0; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanestop.rb",
             "timeout": 5
           }
         ]
@@ -226,6 +226,14 @@ saneloop-archive/
     "macos-automator": {
       "type": "http",
       "url": "http://127.0.0.1:37913/mcp"
+    }
+```
+
+**For native Xcode apps**, add the Mini Xcode singleton (requires Xcode open on Mini):
+```json
+    "xcode": {
+      "type": "http",
+      "url": "http://127.0.0.1:37915/mcp"
     }
 ```
 

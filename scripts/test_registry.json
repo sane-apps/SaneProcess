@@ -164,6 +164,15 @@
       ]
     },
     {
+      "path": "scripts/automation/agent_heartbeat_test.rb",
+      "label": "Grok recurring-agent runner tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/agent_heartbeat_test.rb"
+      ]
+    },
+    {
       "path": "scripts/automation/dependency_baseline_test.rb",
       "label": "Air and Mini dependency baseline tests",
       "status": "required",

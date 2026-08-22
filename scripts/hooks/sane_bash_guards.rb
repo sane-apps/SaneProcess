@@ -10,6 +10,7 @@
 require 'stringio'
 require 'json'
 require 'shellwords'
+require_relative 'core/hook_payload'
 
 GUARDS = %w[
   sane_catastrophic_guard.rb
@@ -32,12 +33,11 @@ SHELL_OPTION_WITH_VALUE = %w[
 MAX_SHELL_INSPECTION_DEPTH = 4
 
 def bash_command_from_payload(payload)
-  data = JSON.parse(payload)
-  return nil unless data['tool_name'] == 'Bash'
+  data = SaneHookPayload.parse(payload)
+  command = data['command']
+  return nil if command.empty?
+  return command if SaneHookPayload.shell?(data['tool_name']) || data['tool_name'].empty?
 
-  tool_input = data['tool_input'] || {}
-  tool_input['command'].to_s
-rescue JSON::ParserError
   nil
 end
 

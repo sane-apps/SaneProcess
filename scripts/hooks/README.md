@@ -1,8 +1,18 @@
 # SaneProcess Hooks
 
-Production-ready Claude-native hooks for SaneProcess SOP enforcement.
+Shared SaneProcess SOP and safety hooks. Regular clients are Grok and Cursor.
+Claude and Codex keep their own hook registrations as compatibility adapters.
 
-For Codex and other clients, treat these as one layer of the system, not the whole system. The stable cross-client path is `AGENTS.md`, repo skills, MCP, `SaneMaster.rb`, and shared shell/script guards.
+Safety guards (`sane_catastrophic_guard.rb`, `sane_bash_guards.rb`, release /
+ship / email / launch / layout) parse Claude snake_case, Grok camelCase, and
+Cursor shell payloads through `core/hook_payload.rb`.
+
+| Client | Registration |
+|--------|----------------|
+| Grok | `~/.grok/hooks/sane-guards.json` from `scripts/hooks/grok/hooks.json`. Claude/Cursor hook import is off (`compat.*.hooks = false`). |
+| Cursor | `~/.cursor/hooks.json` from `scripts/hooks/cursor/hooks.json.example`. |
+| Claude | `.claude/settings.json` via `run_hook.sh` for SOP hooks, plus the shared guards. |
+| Codex | Existing Codex hook adapters. Shell guards still fire when Codex sends `tool_name=Bash`. |
 
 ## Architecture
 

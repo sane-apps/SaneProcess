@@ -159,6 +159,7 @@ shared public key above (release preflight checks this).
 | `lemonsqueezy` | `api_key` | sales/license tooling |
 | `resend` | `api_key` | email automation |
 | notarytool profile `notarytool` | — | `xcrun notarytool --keychain-profile notarytool` |
+| `claude_hook` / `hmac_secret` | same value on Air and Mini | Production release-receipt signing. Both machines must derive the pinned Ed25519 public key. If Air cannot sign receipts, copy Mini `~/.claude_hook_secret` into this keychain item and `~/.claude_hook_secret` (chmod 600). |
 
 Fetch each secret once per run and reuse it — no `security` calls in loops
 (see `AGENTS.md` Secrets).

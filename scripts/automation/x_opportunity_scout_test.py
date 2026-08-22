@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,15 @@ class XOpportunityScoutTests(unittest.TestCase):
             check=True,
         )
         return json.loads(result.stdout)
+
+    def test_live_search_refuses_x_developer_api_without_owner_override(self):
+        module = self.load_module()
+        with self.assertRaises(module.ScoutError) as raised:
+            module.run_live_search(
+                [{"product": "SaneLot", "query": "dealercenter lang:en", "path": "", "kind": "keyword", "website_url": "https://sanelot.com"}],
+                10,
+            )
+        self.assertIn("Grok subscription", str(raised.exception))
 
     def test_dry_run_selects_queries_without_x_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -229,6 +239,8 @@ class XOpportunityScoutTests(unittest.TestCase):
         sys.modules["xdk.oauth1_auth"] = fake_auth
         original_get_secret = module.get_secret
         module.get_secret = lambda account: f"{account}-secret"
+        old_allow = os.environ.get("ALLOW_X_API_SCOUT")
+        os.environ["ALLOW_X_API_SCOUT"] = "1"
         try:
             results = module.run_live_search(
                 [
@@ -243,6 +255,10 @@ class XOpportunityScoutTests(unittest.TestCase):
             )
         finally:
             module.get_secret = original_get_secret
+            if old_allow is None:
+                os.environ.pop("ALLOW_X_API_SCOUT", None)
+            else:
+                os.environ["ALLOW_X_API_SCOUT"] = old_allow
             if old_xdk is None:
                 sys.modules.pop("xdk", None)
             else:
@@ -299,6 +315,8 @@ class XOpportunityScoutTests(unittest.TestCase):
         sys.modules["xdk.oauth1_auth"] = fake_auth
         original_get_secret = module.get_secret
         module.get_secret = lambda account: f"{account}-secret"
+        old_allow = os.environ.get("ALLOW_X_API_SCOUT")
+        os.environ["ALLOW_X_API_SCOUT"] = "1"
         try:
             results = module.run_live_search(
                 [
@@ -313,6 +331,10 @@ class XOpportunityScoutTests(unittest.TestCase):
             )
         finally:
             module.get_secret = original_get_secret
+            if old_allow is None:
+                os.environ.pop("ALLOW_X_API_SCOUT", None)
+            else:
+                os.environ["ALLOW_X_API_SCOUT"] = old_allow
             if old_xdk is None:
                 sys.modules.pop("xdk", None)
             else:

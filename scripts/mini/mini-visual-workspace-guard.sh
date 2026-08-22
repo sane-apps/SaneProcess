@@ -667,6 +667,8 @@ while IFS= read -r line; do
   case "$line" in
     *"/org.sparkle-project.Sparkle/Launcher/"*"/Updater.app/"*" /Applications/${TARGET_APP}.app"*)
       ;;
+    *".appex/"*)
+      ;;
     *"/Applications/${TARGET_APP}.app/"*|*" ${TARGET_APP} "*)
       ;;
     *"SaneClickExtension"*)

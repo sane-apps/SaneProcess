@@ -8,6 +8,9 @@
     ],
     "preToolUse": [
       {
+        "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/cursor/catastrophic_pre_tool_use.rb"
+      },
+      {
         "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/cursor/layout_pre_tool_use.rb",
         "matcher": "Write|Edit|NotebookEdit|StrReplace"
       }

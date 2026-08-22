@@ -67,10 +67,33 @@ exit(run_tests('SaneProcess MCP contract tests') do
       bridge = repo_path('scripts/mcp_singleton_bridge.cjs')
       output, status = Open3.capture2e(node, bridge, 'list')
       assert(status.success?, output)
-      %w[apple-docs macos-automator].each do |name|
+      %w[apple-docs macos-automator xcode].each do |name|
         assert_includes(output, "#{name}\thttp://127.0.0.1:")
         assert_includes(output, servers.fetch(name).fetch('url'))
       end
+      true
+    end
+
+    test('Xcode MCP uses the Mini HTTP singleton, not a fresh Air SSH') do
+      servers = JSON.parse(server_source('.mcp.json')).fetch('mcpServers')
+      xcode = servers.fetch('xcode')
+      assert_eq(xcode.fetch('type'), 'http')
+      assert_eq(xcode.fetch('url'), 'http://127.0.0.1:37915/mcp')
+      assert(!xcode.key?('command'), 'Air/project xcode MCP must not spawn local mcpbridge')
+
+      wrapper = server_source('scripts/grok-bin/xcode-mcp.sh')
+      assert_includes(wrapper, '--framed')
+      assert_includes(wrapper, '127.0.0.1:37915')
+      assert_includes(wrapper, 'xcode-mcp.sh" --framed')
+
+      frame = repo_path('scripts/grok-bin/xcode-mcp-frame.py')
+      output, status = Open3.capture2e('/usr/bin/python3', frame, '--self-test')
+      assert(status.success?, output)
+
+      bridge = server_source('scripts/mcp_singleton_bridge.cjs')
+      assert_includes(bridge, 'port: 37915')
+      assert_includes(bridge, "homePath('.grok', 'bin', 'xcode-mcp.sh')")
+      assert_includes(bridge, 'args: []')
       true
     end
 
@@ -83,7 +106,7 @@ exit(run_tests('SaneProcess MCP contract tests') do
       assert_includes(output, '<string>/opt/homebrew/opt/node@24/bin/node</string>')
       assert_match(output, %r{<key>KeepAlive</key>\s*<dict>\s*<key>SuccessfulExit</key>\s*<false/>\s*</dict>})
       assert_match(output, %r{<key>ThrottleInterval</key>\s*<integer>60</integer>})
-      assert_includes(server_source('scripts/mcp_singleton_bridge.cjs'), '@steipete/macos-automator-mcp@0.4.5')
+      assert_includes(server_source('scripts/mcp_singleton_bridge.cjs'), '@steipete/macos-automator-mcp@0.4.6')
       true
     end
 

@@ -7,6 +7,7 @@
 
 require 'json'
 require 'shellwords'
+require_relative 'core/hook_payload'
 
 MAX_INSPECTION_DEPTH = 4
 SHELLS = %w[sh bash zsh].freeze
@@ -253,17 +254,14 @@ def catastrophic_tool?(tool_name)
 end
 
 def block_reason(payload)
-  data = JSON.parse(payload)
-  tool_name = data['tool_name'].to_s
-  tool_input = data['tool_input'] || {}
+  data = SaneHookPayload.parse(payload)
+  tool_name = data['tool_name']
   return 'catastrophic external resource operation' if catastrophic_tool?(tool_name)
-  return nil unless tool_name == 'Bash'
+  return nil unless SaneHookPayload.shell?(tool_name) || (tool_name.empty? && !data['command'].empty?)
 
-  command = tool_input['command'].to_s
-  cwd = tool_input['cwd'] || data['cwd']
+  command = data['command']
+  cwd = data['cwd']
   catastrophic_command?(command, cwd) ? 'catastrophic shell operation' : nil
-rescue JSON::ParserError
-  nil
 end
 
 payload = $stdin.read.force_encoding(Encoding::UTF_8)

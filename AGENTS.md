@@ -5,6 +5,11 @@ agent overlay, not the full runbook. Detailed implementation, release, Mini,
 and operator setup notes live in `DEVELOPMENT.md`, `ARCHITECTURE.md`,
 `DEVELOPER_SETUP.md`, `templates/RELEASE_SOP.md`, and `scripts/`.
 
+Regular daily work is Grok, Grokbot, and Cursor. Grok uses native
+`~/.grok/hooks` (git source `scripts/hooks/grok/hooks.json`). Cursor uses
+`~/.cursor/hooks.json`. Keep Codex/Claude hook adapters working. Do not send
+regular jobs to OpenAI or Anthropic unless the owner asks.
+
 Speak plainly and briefly. Use singular voice for SaneApps communications:
 `I`, `me`, `my`; never `we`, `us`, or `our`.
 
@@ -152,7 +157,7 @@ the wrapper.
 | Work email | `ruby scripts/SaneMaster.rb check_inbox` or `~/SaneApps/infra/scripts/check-inbox.sh` |
 | Sales/download/funnel | `sales`, `downloads`, `events` |
 | Tool discovery | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` |
-| Cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply --preserve-apps AppName` |
+| Cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host local --apply --preserve-apps AppName` (Air) or `--host mini --apply` / `--server` (Mini). Plans generated junk by kind, not free space. |
 | Verification scope plan | `ruby scripts/SaneMaster.rb proof_plan --task "..."` |
 | Process health | `process_eval`, `sop_review`, `near_miss_review`, `verify_failure_review` |
 | Route cost review | `ruby scripts/SaneMaster.rb route_cost_review --json` |

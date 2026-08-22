@@ -8,6 +8,9 @@ set -uo pipefail
 LABEL="${SANE_AGENTMEMORY_TUNNEL_LABEL:-com.saneapps.agentmemory-tunnel}"
 MINI_HOST="${SANE_AGENTMEMORY_MINI_HOST:-mini}"
 LOCAL_PORT="${SANE_AGENTMEMORY_LOCAL_PORT:-3111}"
+APPLE_DOCS_PORT="${SANE_APPLE_DOCS_LOCAL_PORT:-37911}"
+MACOS_AUTOMATOR_PORT="${SANE_MACOS_AUTOMATOR_LOCAL_PORT:-37913}"
+XCODE_PORT="${SANE_XCODE_LOCAL_PORT:-37915}"
 URL="${SANE_AGENTMEMORY_URL:-http://127.0.0.1:$LOCAL_PORT}"
 LAUNCHCTL="${SANE_LAUNCHCTL_BIN:-/bin/launchctl}"
 CURL="${SANE_CURL_BIN:-/usr/bin/curl}"
@@ -34,6 +37,9 @@ if [[ "${1:-}" == "--tunnel" ]]; then
     -o ServerAliveInterval=15 \
     -o ServerAliveCountMax=3 \
     -L "$LOCAL_PORT:127.0.0.1:3111" \
+    -L "$APPLE_DOCS_PORT:127.0.0.1:37911" \
+    -L "$MACOS_AUTOMATOR_PORT:127.0.0.1:37913" \
+    -L "$XCODE_PORT:127.0.0.1:37915" \
     "$MINI_HOST"
 fi
 

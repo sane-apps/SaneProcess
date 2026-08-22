@@ -76,10 +76,21 @@ log "Syncing Grok control-plane profile to $MINI_HOST..."
 # Ensure repo grok-bin exists (the thing we actually keep in git)
 [[ -d "$REPO_GROK_BIN_DIR" ]] || die "Missing repo grok-bin dir: $REPO_GROK_BIN_DIR"
 
-# Rsync the git-owned grok-bin helpers to the Mini (and ensure local ~/.grok/bin exists for the operator)
+# Overlay git-owned helpers onto ~/.grok/bin. Never --delete: the official Grok
+# CLI binary/symlinks live here too, and --delete once wiped them.
 mkdir -p "$LOCAL_GROK_BIN_DIR"
-rsync -az --delete "$REPO_GROK_BIN_DIR/" "$LOCAL_GROK_BIN_DIR/" || die "rsync of local grok-bin failed"
+rsync -az "$REPO_GROK_BIN_DIR/" "$LOCAL_GROK_BIN_DIR/" || die "rsync of local grok-bin failed"
 log "  + grok-bin helpers synced locally"
+
+REPO_GROK_HOOKS="$REPO_ROOT/scripts/hooks/grok/hooks.json"
+LOCAL_GROK_HOOKS_DIR="$LOCAL_GROK_DIR/hooks"
+if [[ -f "$REPO_GROK_HOOKS" ]]; then
+  mkdir -p "$LOCAL_GROK_HOOKS_DIR"
+  rsync -az "$REPO_GROK_HOOKS" "$LOCAL_GROK_HOOKS_DIR/sane-guards.json" || die "rsync of local grok hooks failed"
+  ssh "$MINI_HOST" "mkdir -p ~/.grok/hooks" 2>/dev/null || true
+  rsync -az "$REPO_GROK_HOOKS" "$MINI_HOST:~/.grok/hooks/sane-guards.json" 2>/dev/null || log "  ! grok hooks rsync to mini (non-fatal if mini not reachable)"
+  log "  + native Grok hooks synced locally and mirrored to mini"
+fi
 
 if [[ -f "$LOCAL_GROK_CONFIG" ]]; then
   ssh "$MINI_HOST" "mkdir -p ~/.grok" 2>/dev/null || true
@@ -95,9 +106,9 @@ if [[ -d "$LOCAL_AGENTS_SKILLS_DIR" ]]; then
   log "  + .agents/skills mirrored to mini (where present)"
 fi
 
-# Also push the grok-bin contents to the Mini's expected location so a Grok session there sees them
+# Overlay helpers onto Mini ~/.grok/bin without deleting the Mini Grok CLI binary.
 ssh "$MINI_HOST" "mkdir -p ~/.grok/bin" 2>/dev/null || true
-rsync -az --delete "$REPO_GROK_BIN_DIR/" "$MINI_HOST:~/.grok/bin/" 2>/dev/null || log "  ! grok-bin rsync to mini (non-fatal if mini not reachable)"
+rsync -az "$REPO_GROK_BIN_DIR/" "$MINI_HOST:~/.grok/bin/" 2>/dev/null || log "  ! grok-bin rsync to mini (non-fatal if mini not reachable)"
 log "  + grok-bin mirrored to mini"
 
 # Push a small set of universal SaneProcess scripts that Grok sessions commonly invoke

@@ -316,8 +316,11 @@ module SaneMasterModules
               cmd = hook['command'] || ''
               if cmd.include?(hook_file)
                 found = true
-                guarded = true if cmd.include?('.saneprocess')
+                guarded = true if cmd.include?('.saneprocess') || cmd.include?('run_hook.sh')
                 masked << hook_file if cmd.match?(/\|\|\s*true\b/)
+                if cmd.match?(/\$\{CLAUDECODE\}|\$\{CLAUDE_CODE\}/)
+                  no_guard << "#{hook_file} (bare ${CLAUDECODE} breaks Grok hook import)"
+                end
               end
             end
           end

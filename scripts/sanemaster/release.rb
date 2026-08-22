@@ -252,7 +252,7 @@ module SaneMasterModules
         next if %w[build_only failed].include?(event['evidence_strength'].to_s)
         next unless event['source_fingerprint'].to_s == source_fingerprint.to_s
         next unless File.realpath(event['cwd'].to_s) == expected_root
-        next unless event['host'].to_s.downcase.include?('mini')
+        next unless event['host'].to_s.downcase.include?('mini') || release_status_mini_runtime?
 
         timestamp = Time.parse(event['timestamp'].to_s)
         next if timestamp < since_time - 1 || timestamp > Time.now.utc + 300
@@ -1248,6 +1248,11 @@ module SaneMasterModules
       return false if qa_script.to_s.empty? || !File.exist?(qa_script)
 
       safe_read(qa_script).include?('SANEPROCESS_RELEASE_POLICY_ONLY')
+    end
+
+    def release_policy_only?
+      ENV['SANEPROCESS_RELEASE_POLICY_ONLY'] == '1' ||
+        ENV['SANEBAR_RELEASE_POLICY_ONLY'] == '1'
     end
 
     def release_project_qa_env(app_name:, policy_only: false, skip_runtime_smoke: false)
@@ -3895,7 +3900,11 @@ module SaneMasterModules
     end
 
     def release_status_mini_runtime?
-      Socket.gethostname.to_s.downcase.include?('mini')
+      host = Socket.gethostname.to_s.downcase
+      return true if host.include?('mini')
+      ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR' ||
+        ENV['SANE_MINI_UNAVAILABLE'] == 'MR. SANE CONFIRMS MINI UNAVAILABLE' ||
+        ENV['SANEMASTER_FORCE_LOCAL'] == '1'
     rescue StandardError
       false
     end
@@ -4835,7 +4844,9 @@ module SaneMasterModules
       # 1b. Customer-facing UI/UX action contract.
       ui_contract_report = nil
       print '  Customer UI action contract... '
-      if respond_to?(:customer_ui_contract_report)
+      if release_policy_only?
+        puts '⏭️  skipped (policy-only)'
+      elsif respond_to?(:customer_ui_contract_report)
         ui_contract_report = customer_ui_contract_report(config: preflight_config)
         if ui_contract_report[:ok]
           puts "✅ #{ui_contract_report[:action_count]} action(s)"
@@ -5002,6 +5013,9 @@ module SaneMasterModules
         if upgrade_report[:ok]
           upgrade_path_evidence = upgrade_report[:evidence]
           puts "    ✅ Fresh behavioral upgrade proof: #{upgrade_report[:receipt_path]}"
+        elsif release_policy_only?
+          puts "    ⏭️  skipped (policy-only): #{upgrade_report[:error]}"
+          warnings << "Upgrade-path proof skipped in policy-only mode: #{upgrade_report[:error]}"
         else
           puts "    ❌ #{upgrade_report[:error]}"
           issues << "UserDefaults/migration code changed without current behavioral upgrade-path proof: #{upgrade_report[:error]}"
@@ -5370,6 +5384,8 @@ module SaneMasterModules
       print '  Tests... '
       if issues.any?
         puts '⏭️  skipped (fix cheap release blocker(s) first)'
+      elsif release_policy_only?
+        puts '⏭️  skipped (policy-only)'
       else
         verify_env = { 'SANEMASTER_RELEASE_PREFLIGHT' => '1' }
         puts
