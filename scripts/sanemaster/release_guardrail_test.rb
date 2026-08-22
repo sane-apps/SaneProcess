@@ -6497,6 +6497,9 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(!release_script.include?('digest.update("SaneProcess/'),
              'release.sh must not carry an inline copy of the fingerprint digest')
       assert_includes(release_script, 'customer UI receipt is stale for release_preflight reuse')
+      assert_includes(release_script, "policy_only = ENV['SANEPROCESS_RELEASE_POLICY_ONLY'] == '1'")
+      assert_includes(release_script, 'if customer_ui_manifest && !policy_only')
+      assert_includes(release_script, 'if migration_files.any? && !policy_only')
       assert_includes(release_script, 'Project QA guardrails covered by fresh SaneMaster release_preflight receipt')
       true
     end

@@ -1250,6 +1250,11 @@ module SaneMasterModules
       safe_read(qa_script).include?('SANEPROCESS_RELEASE_POLICY_ONLY')
     end
 
+    def release_policy_only?
+      ENV['SANEPROCESS_RELEASE_POLICY_ONLY'] == '1' ||
+        ENV['SANEBAR_RELEASE_POLICY_ONLY'] == '1'
+    end
+
     def release_project_qa_env(app_name:, policy_only: false, skip_runtime_smoke: false)
       app_prefix = app_name.to_s.upcase.gsub(/[^A-Z0-9]+/, '_')
       env = {
@@ -4839,7 +4844,9 @@ module SaneMasterModules
       # 1b. Customer-facing UI/UX action contract.
       ui_contract_report = nil
       print '  Customer UI action contract... '
-      if respond_to?(:customer_ui_contract_report)
+      if release_policy_only?
+        puts '⏭️  skipped (policy-only)'
+      elsif respond_to?(:customer_ui_contract_report)
         ui_contract_report = customer_ui_contract_report(config: preflight_config)
         if ui_contract_report[:ok]
           puts "✅ #{ui_contract_report[:action_count]} action(s)"
@@ -5006,6 +5013,9 @@ module SaneMasterModules
         if upgrade_report[:ok]
           upgrade_path_evidence = upgrade_report[:evidence]
           puts "    ✅ Fresh behavioral upgrade proof: #{upgrade_report[:receipt_path]}"
+        elsif release_policy_only?
+          puts "    ⏭️  skipped (policy-only): #{upgrade_report[:error]}"
+          warnings << "Upgrade-path proof skipped in policy-only mode: #{upgrade_report[:error]}"
         else
           puts "    ❌ #{upgrade_report[:error]}"
           issues << "UserDefaults/migration code changed without current behavioral upgrade-path proof: #{upgrade_report[:error]}"
@@ -5374,6 +5384,8 @@ module SaneMasterModules
       print '  Tests... '
       if issues.any?
         puts '⏭️  skipped (fix cheap release blocker(s) first)'
+      elsif release_policy_only?
+        puts '⏭️  skipped (policy-only)'
       else
         verify_env = { 'SANEMASTER_RELEASE_PREFLIGHT' => '1' }
         puts
