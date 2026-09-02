@@ -14,14 +14,20 @@ require 'fileutils'
 require 'time'
 
 module SaneGuiFeedback
+  # Legacy global path — read only for migration; never write pending here.
+  # Cross-chat leak (2026-09-02): one pending file made T&Z Mini GUI alerts
+  # fire in unrelated Cursor chats via the global stop hook.
   CURSOR_STATE_PATH = File.expand_path('~/.cursor/sane_gui_feedback.json').freeze
+  CURSOR_STATE_DIR = File.expand_path('~/.cursor/sane_gui_feedback').freeze
   PENDING_TTL_SECONDS = 30 * 60
 
   # Hard mutations: always a GUI/portal action. Click return is not proof.
   # Do NOT match bare `osascript` — completion chimes use
   # `osascript -e 'display notification …'` and are not portal clicks.
+  # Do NOT match bare `System Events` — AX/window reads are feedback polls.
   HARD_GUI_PATTERNS = [
-    /\bSystem Events\b/i,
+    /\bSystem Events\b.*\b(?:click|keystroke|key code|set value|select menu|perform action)\b/i,
+    /\b(?:click|keystroke|key code|set value|select menu|perform action)\b.*\bSystem Events\b/i,
     /\bclick\b.*\b(?:button|menu item|UI element|checkbox|radio)\b/i,
     /\bkeystroke\b/i,
     /\bkey code\b/i,
@@ -75,9 +81,14 @@ module SaneGuiFeedback
     /\bcapture-mini-screenshot\.sh\b/i,
     /\bcapture-web-screenshot\.sh\b/i,
     /\bscreencapture\b/i,
+    /\bsimctl\b.*\bscreenshot\b/i,
+    /\bxcrun simctl io\b.*\bscreenshot\b/i,
+    /\blive-gui-feedback-.*\.png\b/i,
     /\bAX\b.*\b(?:UI element|attribute|description)\b/i,
     /\baccessibility\b/i,
     /\bget (?:every |the )?(?:dialog|sheet|window|button|static text)\b/i,
+    /\b(?:name|value|role|description|title) of (?:every |the )?(?:window|button|UI element|process)\b/i,
+    /\bentire contents of window\b/i,
     /\bUI elements?\b/i,
     /\bdocument\.body\b/i,
     /\binnerText\b/i,
@@ -124,6 +135,7 @@ module SaneGuiFeedback
   def gui_action?(command)
     text = command.to_s
     return false if text.strip.empty?
+    return false if detector_self_exercise?(text)
     return false if benign_osascript?(text)
     return false if git_docs_only?(text)
     return false if feedback_poll?(text) && !mutationish?(text)
@@ -132,6 +144,20 @@ module SaneGuiFeedback
 
     soft = SOFT_PORTAL_PATTERNS.any? { |pattern| text.match?(pattern) }
     soft && automation_context?(text)
+  end
+
+  # Running the detector's own tests (or inlined SaneGuiFeedback.* checks) embeds
+  # "System Events" / "click button" fixture strings in the shell command. Those
+  # must not arm pending or the stop hook fires in the wrong chat (2026-09-02).
+  def detector_self_exercise?(command)
+    text = command.to_s
+    return true if text.match?(%r{(?:^|[/\s])gui_feedback_test\.rb\b})
+    return true if text.match?(
+      /\bSaneGuiFeedback\.(?:gui_action\?|track_command!|cursor_after_shell_payload|cursor_stop_followup|feedback_poll\?|mark_pending!|clear_pending!|pending\?)/
+    )
+    return true if text.match?(%r{scripts/hooks/core/gui_feedback\.rb}) && text.match?(/\b(?:require|require_relative)\b/)
+
+    false
   end
 
   def automation_context?(command)
@@ -211,56 +237,59 @@ module SaneGuiFeedback
     ].join("\n")
   end
 
-  def track_command!(command)
+  def track_command!(command, conversation_id: nil)
     text = command.to_s
     return :noop if text.strip.empty?
 
     if feedback_poll?(text)
-      clear_pending!
+      clear_pending!(conversation_id: conversation_id)
       return :cleared
     end
 
     return :noop unless gui_action?(text)
 
-    mark_pending!(text)
+    mark_pending!(text, conversation_id: conversation_id)
     :pending
   end
 
-  def mark_pending!(command)
+  def mark_pending!(command, conversation_id: nil)
     summary = command.to_s.gsub(/\s+/, ' ').strip[0, 180]
     write_cursor_state(
+      conversation_id: conversation_id,
       pending: true,
       last_action: summary,
       last_action_at: Time.now.iso8601,
       cleared_at: nil
     )
-    track_state_manager_pending!(summary)
+    track_state_manager_pending!(summary, conversation_id: conversation_id)
   end
 
-  def clear_pending!
+  def clear_pending!(conversation_id: nil)
+    prior = cursor_state(conversation_id: conversation_id)
     write_cursor_state(
+      conversation_id: conversation_id,
       pending: false,
-      last_action: cursor_state[:last_action],
-      last_action_at: cursor_state[:last_action_at],
+      last_action: prior[:last_action],
+      last_action_at: prior[:last_action_at],
       cleared_at: Time.now.iso8601
     )
-    track_state_manager_cleared!
+    track_state_manager_cleared!(conversation_id: conversation_id)
   end
 
-  def pending?
-    state = merged_pending_state
+  def pending?(conversation_id: nil)
+    state = merged_pending_state(conversation_id: conversation_id)
     return false unless state[:pending]
     return false if stale?(state[:last_action_at])
 
     true
   end
 
-  def pending_summary
-    merged_pending_state[:last_action].to_s
+  def pending_summary(conversation_id: nil)
+    merged_pending_state(conversation_id: conversation_id)[:last_action].to_s
   end
 
-  def cursor_after_shell_payload(command:, output: nil)
-    result = track_command!(command)
+  def cursor_after_shell_payload(command:, output: nil, conversation_id: nil)
+    result = track_command!(command, conversation_id: conversation_id)
     signal = output_needs_attention?(output)
 
     if result == :pending || (gui_action?(command) && signal)
@@ -282,12 +311,14 @@ module SaneGuiFeedback
     end
   end
 
-  def cursor_stop_followup(status:, loop_count:)
+  def cursor_stop_followup(status:, loop_count:, conversation_id: nil)
     return nil unless status.to_s == 'completed'
     return nil if loop_count.to_i >= 2
-    return nil unless pending?
+    # No conversation id → do not consult shared/legacy pending (cross-chat leak).
+    return nil if conversation_id.to_s.strip.empty?
+    return nil unless pending?(conversation_id: conversation_id)
 
-    action = pending_summary
+    action = pending_summary(conversation_id: conversation_id)
     action_bit = action.empty? ? 'a GUI/portal mutation' : action
     'GUI feedback loop incomplete. You mutated a GUI/portal surface ' \
       "(#{action_bit}) but did not re-read dialog/page/AX/API state afterward. " \
@@ -303,34 +334,84 @@ module SaneGuiFeedback
     true
   end
 
-  def cursor_state
-    return {} unless File.file?(CURSOR_STATE_PATH)
+  def normalize_conversation_id(conversation_id)
+    id = conversation_id.to_s.strip
+    return nil if id.empty?
 
-    raw = JSON.parse(File.read(CURSOR_STATE_PATH))
+    # Keep filesystem-safe; Cursor ids are usually UUID / hex.
+    safe = id.gsub(/[^A-Za-z0-9._:-]/, '_')
+    safe.empty? ? nil : safe
+  end
+
+  def cursor_state_path(conversation_id: nil)
+    safe = normalize_conversation_id(conversation_id)
+    return nil unless safe
+
+    File.join(CURSOR_STATE_DIR, "#{safe}.json")
+  end
+
+  def cursor_state(conversation_id: nil)
+    path = cursor_state_path(conversation_id: conversation_id)
+    return {} unless path && File.file?(path)
+
+    raw = JSON.parse(File.read(path))
     {
       pending: raw['pending'] == true,
       last_action: raw['last_action'],
       last_action_at: raw['last_action_at'],
-      cleared_at: raw['cleared_at']
+      cleared_at: raw['cleared_at'],
+      conversation_id: raw['conversation_id']
     }
   rescue JSON::ParserError, Errno::ENOENT
     {}
   end
 
-  def write_cursor_state(pending:, last_action:, last_action_at:, cleared_at:)
-    FileUtils.mkdir_p(File.dirname(CURSOR_STATE_PATH))
-    payload = {
-      pending: pending,
-      last_action: last_action,
-      last_action_at: last_action_at,
-      cleared_at: cleared_at
-    }
-    File.write(CURSOR_STATE_PATH, JSON.pretty_generate(payload))
+  def write_cursor_state(pending:, last_action:, last_action_at:, cleared_at:, conversation_id: nil)
+    path = cursor_state_path(conversation_id: conversation_id)
+    # Without a conversation id, skip durable Cursor pending so stop hooks in
+    # other chats cannot inherit it. Claude still uses StateManager below.
+    if path
+      FileUtils.mkdir_p(File.dirname(path))
+      payload = {
+        pending: pending,
+        last_action: last_action,
+        last_action_at: last_action_at,
+        cleared_at: cleared_at,
+        conversation_id: normalize_conversation_id(conversation_id)
+      }
+      File.write(path, JSON.pretty_generate(payload))
+    end
+    neutralize_legacy_global_state!
   rescue StandardError
     # Fail open — never break the agent loop on state I/O.
   end
 
-  def track_state_manager_pending!(summary)
+  def neutralize_legacy_global_state!
+    return unless File.file?(CURSOR_STATE_PATH)
+
+    raw = begin
+      JSON.parse(File.read(CURSOR_STATE_PATH))
+    rescue JSON::ParserError
+      {}
+    end
+    return if raw['pending'] != true && raw['legacy_disabled'] == true
+
+    File.write(
+      CURSOR_STATE_PATH,
+      JSON.pretty_generate(
+        pending: false,
+        last_action: raw['last_action'],
+        last_action_at: raw['last_action_at'],
+        cleared_at: Time.now.iso8601,
+        legacy_disabled: true,
+        note: 'Global pending retired 2026-09-02; state is per conversation_id under sane_gui_feedback/'
+      )
+    )
+  rescue StandardError
+    nil
+  end
+
+  def track_state_manager_pending!(summary, conversation_id: nil)
     return unless defined?(StateManager)
 
     StateManager.update(:gui_feedback) do |state|
@@ -339,26 +420,33 @@ module SaneGuiFeedback
       state[:last_action] = summary
       state[:last_action_at] = Time.now.iso8601
       state[:cleared_at] = nil
+      state[:conversation_id] = normalize_conversation_id(conversation_id)
       state
     end
   rescue StandardError
     nil
   end
 
-  def track_state_manager_cleared!
+  def track_state_manager_cleared!(conversation_id: nil)
     return unless defined?(StateManager)
 
     StateManager.update(:gui_feedback) do |state|
       state ||= {}
-      state[:pending] = false
-      state[:cleared_at] = Time.now.iso8601
+      owner = state[:conversation_id] || state['conversation_id']
+      mine = normalize_conversation_id(conversation_id)
+      # Claude (no conversation id): always clear. Cursor: only clear own row.
+      if mine.nil? || owner.nil? || owner.to_s == mine.to_s
+        state[:pending] = false
+        state[:cleared_at] = Time.now.iso8601
+      end
       state
     end
   rescue StandardError
     nil
   end
 
-  def merged_pending_state
+  def merged_pending_state(conversation_id: nil)
+    safe = normalize_conversation_id(conversation_id)
     sm = {}
     if defined?(StateManager)
       begin
@@ -367,10 +455,27 @@ module SaneGuiFeedback
         sm = {}
       end
     end
-    file = cursor_state
-    # Prefer the freshest pending marker.
-    candidates = [sm, file].select { |h| h[:pending] || h['pending'] }
-    return file.merge(sm) if candidates.empty?
+
+    sm_pending = sm[:pending] == true || sm['pending'] == true
+    sm_owner = sm[:conversation_id] || sm['conversation_id']
+
+    # Claude sanestop/sanetrack: conversation_id is nil → honor project StateManager.
+    # Cursor stop: conversation_id required → only matching scoped file (+ matching SM).
+    if safe.nil?
+      return {
+        pending: sm_pending,
+        last_action: sm[:last_action] || sm['last_action'],
+        last_action_at: sm[:last_action_at] || sm['last_action_at']
+      }
+    end
+
+    sm_usable = sm_pending && !sm_owner.to_s.strip.empty? && sm_owner.to_s == safe
+    file = cursor_state(conversation_id: conversation_id)
+    candidates = []
+    candidates << sm if sm_usable
+    candidates << file if file[:pending]
+
+    return { pending: false } if candidates.empty?
 
     candidates.max_by do |h|
       ts = h[:last_action_at] || h['last_action_at']

@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 # Cursor stop adapter → force one follow-up when GUI click lacked a feedback poll.
+# Must be conversation-scoped — global/workspace pending leaked across chats.
 
 require 'json'
 
@@ -20,10 +21,15 @@ rescue JSON::ParserError
   {}
 end
 
-followup = SaneGuiFeedback.cursor_stop_followup(
-  status: payload['status'],
-  loop_count: payload['loop_count']
-)
+followup = begin
+  SaneGuiFeedback.cursor_stop_followup(
+    status: payload['status'],
+    loop_count: payload['loop_count'],
+    conversation_id: payload['conversation_id'] || payload['conversationId']
+  )
+rescue StandardError
+  nil
+end
 
 if followup
   if ENV['GROK_HOOK_EVENT'].to_s != ''

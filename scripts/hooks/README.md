@@ -177,6 +177,13 @@ Permanent owner rule (2026-07-29): after GUI/portal mutations, re-read dialog/pa
 Shared logic: `scripts/hooks/core/gui_feedback.rb`  
 Tests: `ruby scripts/hooks/gui_feedback_test.rb`
 
+**Conversation scope (2026-09-02):** pending state is per Cursor `conversation_id`
+under `~/.cursor/sane_gui_feedback/<id>.json`. The old global
+`~/.cursor/sane_gui_feedback.json` is retired (`legacy_disabled`) so a T&Z Mini
+session cannot inject stop follow-ups into unrelated chats. Stop with a missing
+`conversation_id` never follows up. Bare System Events AX reads and `simctl`
+screenshots count as feedback polls, not mutations.
+
 Install Cursor adapters on the controller (Air):
 
 ```bash
@@ -185,5 +192,6 @@ cp scripts/hooks/cursor/gui_feedback_after_shell.rb ~/.cursor/hooks/
 cp scripts/hooks/cursor/gui_feedback_stop.rb ~/.cursor/hooks/
 chmod +x ~/.cursor/hooks/gui_feedback_*.rb
 # Merge hooks.json.example into ~/.cursor/hooks.json (afterShellExecution + stop)
+# Prefer pointing hooks.json at the repo adapters so conversation_id wiring stays current.
 ```
 

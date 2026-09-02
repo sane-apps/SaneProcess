@@ -3,6 +3,7 @@
 
 # Cursor afterShellExecution adapter → SaneProcess GUI feedback loop.
 # Fail open on any error so a broken hook never blocks the agent loop.
+# State is scoped by conversation_id so chats cannot steal each other's pending.
 
 require 'json'
 
@@ -31,7 +32,16 @@ output = payload['output'] ||
          payload['toolResult'] ||
          payload['tool_result'] ||
          ''
+conversation_id = payload['conversation_id'] || payload['conversationId']
 
-result = SaneGuiFeedback.cursor_after_shell_payload(command: command, output: output)
+result = begin
+  SaneGuiFeedback.cursor_after_shell_payload(
+    command: command,
+    output: output,
+    conversation_id: conversation_id
+  )
+rescue StandardError
+  nil
+end
 puts((result || {}).to_json)
 exit 0
