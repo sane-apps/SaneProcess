@@ -103,7 +103,11 @@ module SaneGuiFeedback
     /\bunresolved.?issues\b/i,
     /\bWAITING_FOR_REVIEW\b/i,
     /\bPREPARE_FOR_SUBMISSION\b/i,
-    /\bIN_REVIEW\b/i
+    /\bIN_REVIEW\b/i,
+    # AgentMemory / shared Mini API re-reads (hung iii + tunnel recovery, 2026-09-03)
+    %r{/agentmemory/(?:livez|health|search)\b}i,
+    /\bagentmemory\b.*\bstatus\b/i,
+    /\bagentmemory status\b/i
   ].freeze
 
   # Signals in command output that mean "read me before claiming done".

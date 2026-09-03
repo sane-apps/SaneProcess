@@ -82,6 +82,17 @@ failures += 1 unless check(
 )
 
 failures += 1 unless check(
+  'agentmemory livez is feedback poll',
+  SaneGuiFeedback.feedback_poll?('curl -fsS --max-time 3 http://127.0.0.1:3111/agentmemory/livez')
+)
+
+failures += 1 unless check(
+  'agentmemory status is feedback poll',
+  SaneGuiFeedback.feedback_poll?('/opt/homebrew/bin/agentmemory status') &&
+    !SaneGuiFeedback.gui_action?('/opt/homebrew/bin/agentmemory status')
+)
+
+failures += 1 unless check(
   'Newer Build Available output needs attention',
   SaneGuiFeedback.output_needs_attention?('Dialog: Newer Build Available')
 )

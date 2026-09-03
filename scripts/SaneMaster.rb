@@ -251,7 +251,8 @@ class SaneMaster
         'work_session_on' => { args: '', desc: 'Start keep-awake + no-lock work session guard' },
         'work_session_off' => { args: '', desc: 'Restore previous lock settings and stop work-session guard' },
         'work_session_status' => { args: '', desc: 'Show current work-session guard state' },
-        'server_acceptance' => { args: '[--mini HOST] [--skip-sync] [--json] [--plan] [--output DIR]', desc: 'Prove Air-to-Mini server, access, dependency, and sync invariants without production mutation' }
+        'server_acceptance' => { args: '[--mini HOST] [--skip-sync] [--memory-only] [--json] [--plan] [--output DIR]', desc: 'Prove Air-to-Mini server, access, dependency, and sync invariants without production mutation' },
+        'agentmemory_watch' => { args: '', desc: 'Thin Air AgentMemory livez/health/search watch with one tunnel recovery and macOS notify on fail' }
       }
     },
     meta: {
@@ -266,7 +267,7 @@ class SaneMaster
       desc: 'Status, support, and Mini control-plane workflows',
       commands: {
         'status' => { args: '[--fast|--full]', desc: 'Run truthful status coverage; full is default and exits 3 when any selected lane is unavailable' },
-        'operator_brief' => { args: '[--nightly-report PATH] [--morning-report PATH] [--handoff PATH] [--output PATH] [--json]', desc: 'Summarize current SaneApps receipts into a prioritized operator brief' },
+        'operator_brief' => { args: '[--nightly-report PATH] [--morning-report PATH] [--handoff PATH] [--portfolio-root PATH] [--output PATH] [--json] [--skip-finish-line]', desc: 'Summarize current SaneApps receipts into a prioritized operator brief' },
         'business_appointment' => { args: 'add --title TITLE --start "YYYY-MM-DD HH:MM" --attendee EMAIL [--apply] [--json]', desc: 'Create SaneApps-owned business calendar appointments; refuses personal Gmail/calendar routes' },
         'check_inbox' => { args: '[check|review <id>|read <id>|reply ...]', desc: 'Forward to the canonical support inbox workflow' },
         'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini (see also: sync_grok)' },
@@ -2181,6 +2182,8 @@ PY
       work_session_status
     when 'server_acceptance', 'server-acceptance', 'air_mini_acceptance', 'air-mini-acceptance'
       system('/opt/homebrew/opt/ruby/bin/ruby', File.join(__dir__, 'automation', 'air_mini_acceptance.rb'), *args)
+    when 'agentmemory_watch', 'agentmemory-watch', 'memory_watch', 'memory-watch'
+      system('/bin/bash', File.join(__dir__, 'automation', 'run-agentmemory-watch.sh'), *args)
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
 
     # Build & Test
@@ -2817,15 +2820,17 @@ PY
       ]
     },
     'operator_brief' => {
-      usage: 'operator_brief [--nightly-report PATH] [--morning-report PATH] [--handoff PATH] [--output PATH] [--json] [--strict]',
+      usage: 'operator_brief [--nightly-report PATH] [--morning-report PATH] [--handoff PATH] [--portfolio-root PATH] [--output PATH] [--json] [--strict] [--skip-finish-line]',
       description: 'Summarize current SaneApps receipts into a prioritized operator brief for the next maintenance loop.',
       flags: {
         '--nightly-report PATH' => 'Nightly report to parse (default: ~/SaneApps/outputs/nightly_report.md)',
         '--morning-report PATH' => 'Business/opportunity report to freshness-check',
         '--handoff PATH' => 'Session handoff to scan for active blockers',
+        '--portfolio-root PATH' => 'SaneApps root for finish-line dirty/unpushed scan (default: ~/SaneApps)',
         '--output PATH' => 'Markdown output path (default: ~/SaneApps/outputs/operator_brief.md)',
         '--json' => 'Print machine-readable report JSON',
-        '--strict' => 'Exit non-zero when the brief finds priorities'
+        '--strict' => 'Exit non-zero when the brief finds priorities',
+        '--skip-finish-line' => 'Skip portfolio dirty/unpushed/handoff finish-line scan'
       },
       examples: [
         'operator_brief',

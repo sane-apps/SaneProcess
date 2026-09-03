@@ -17,14 +17,18 @@ RUBY="/opt/homebrew/opt/ruby/bin/ruby"
 
 chmod +x \
   "$ROOT/scripts/automation/run-sanecite-monday-sweep.sh" \
-  "$ROOT/scripts/automation/run-sanebar-macos27-watch.sh"
+  "$ROOT/scripts/automation/run-sanebar-macos27-watch.sh" \
+  "$ROOT/scripts/automation/run-agentmemory-watch.sh"
 
 mkdir -p "$AGENTS_DIR" "$OUT"
 
-python3 - <<PY
-import plistlib, pathlib
-root = pathlib.Path("$ROOT")
-out = pathlib.Path("$OUT")
+SANE_AIR_AGENTS_ROOT="$ROOT" SANE_AIR_AGENTS_OUT="$OUT" python3 - <<'PY'
+import os
+import plistlib
+import pathlib
+
+root = pathlib.Path(os.environ['SANE_AIR_AGENTS_ROOT'])
+out = pathlib.Path(os.environ['SANE_AIR_AGENTS_OUT'])
 home = pathlib.Path.home()
 env = {
     "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -47,18 +51,30 @@ jobs = [
         "stdout": "sanebar-macos27-watch.stdout.log",
         "stderr": "sanebar-macos27-watch.stderr.log",
     },
+    {
+        # Thin AgentMemory livez/health/search; pages on red (hung iii / zombie tunnel).
+        "Label": "com.saneapps.agentmemory-watch",
+        "ProgramArguments": ["/bin/bash", str(root / "scripts/automation/run-agentmemory-watch.sh")],
+        "StartInterval": 7200,
+        "RunAtLoad": True,
+        "stdout": "agentmemory-watch.stdout.log",
+        "stderr": "agentmemory-watch.stderr.log",
+    },
 ]
 for job in jobs:
     data = {
         "Label": job["Label"],
         "ProgramArguments": job["ProgramArguments"],
-        "StartCalendarInterval": job["StartCalendarInterval"],
-        "RunAtLoad": False,
+        "RunAtLoad": job.get("RunAtLoad", False),
         "Nice": 10,
         "StandardOutPath": str(out / job["stdout"]),
         "StandardErrorPath": str(out / job["stderr"]),
         "EnvironmentVariables": env,
     }
+    if "StartCalendarInterval" in job:
+        data["StartCalendarInterval"] = job["StartCalendarInterval"]
+    if "StartInterval" in job:
+        data["StartInterval"] = job["StartInterval"]
     path = home / "Library/LaunchAgents" / f'{job["Label"]}.plist'
     with path.open("wb") as fh:
         plistlib.dump(data, fh)
@@ -66,7 +82,7 @@ for job in jobs:
 PY
 
 uid="$(id -u)"
-for label in com.saneapps.sanecite-monday-sweep com.saneapps.sanebar-macos27-watch; do
+for label in com.saneapps.sanecite-monday-sweep com.saneapps.sanebar-macos27-watch com.saneapps.agentmemory-watch; do
   launchctl bootout "gui/$uid/$label" 2>/dev/null || true
   launchctl bootstrap "gui/$uid" "$AGENTS_DIR/${label}.plist"
   launchctl enable "gui/$uid/$label" 2>/dev/null || true

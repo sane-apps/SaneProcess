@@ -68,10 +68,13 @@ exit(run_tests('Air Mini Acceptance Tests') do
 
     test('requires healthy Air REST and a real search response') do
       health = "{\"service\":\"agentmemory\",\"status\":\"healthy\"}\nhttp=200\n"
+      livez = "{\"service\":\"agentmemory\",\"status\":\"ok\"}\nhttp=200\n"
       search = "{\"format\":\"compact\",\"results\":[{\"title\":\"SaneApps memory durability\"}]}\nhttp=200\n"
       assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_rest_health?(health))
+      assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_livez?(livez))
       assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?(search))
       assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_rest_health?(health.sub('healthy', 'degraded')))
+      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_livez?(livez.sub('"ok"', '"down"')))
       assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?("{\"results\":[]}\nhttp=200\n"))
       assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?(search.sub('http=200', 'http=503')))
       true
@@ -105,7 +108,7 @@ exit(run_tests('Air Mini Acceptance Tests') do
       assert(status.success?, stderr)
       plan = JSON.parse(stdout)
       ids = plan.map { |entry| entry.fetch('id') }
-      %w[air-process-access air-agentmemory-tunnel air-agentmemory-health air-agentmemory-search
+      %w[air-process-access air-agentmemory-tunnel air-agentmemory-livez air-agentmemory-health air-agentmemory-search
          air-mini-lan air-mini-tailscale mini-air-return mini-dependencies
          mini-power mini-weekly-restart mini-agentmemory-health air-github-credential
          mini-credential-consumers mini-mcp-apple-docs mini-mcp-macos-automator mini-mcp-xcode mini-mcp-serena mini-retired-training
@@ -115,6 +118,21 @@ exit(run_tests('Air Mini Acceptance Tests') do
       serialized = JSON.generate(plan)
       %w[shutdown reboot upload deploy release notarize rm\ -rf].each do |forbidden|
         assert(!serialized.match?(/#{Regexp.escape(forbidden)}/i), "unsafe plan token: #{forbidden}")
+      end
+      true
+    end
+
+    test('memory-only plan stays thin and includes Mini livez') do
+      stdout, stderr, status = Open3.capture3('/opt/homebrew/opt/ruby/bin/ruby', SCRIPT, '--plan', '--memory-only')
+      assert(status.success?, stderr)
+      plan = JSON.parse(stdout)
+      ids = plan.map { |entry| entry.fetch('id') }
+      %w[air-host air-agentmemory-tunnel air-agentmemory-livez air-agentmemory-health
+         air-agentmemory-search mini-agentmemory-livez mini-agentmemory-service].each do |id|
+        assert(ids.include?(id), "missing memory-only check #{id}")
+      end
+      %w[air-dependencies memory-checksum-parity acceptance-contracts mini-mcp-apple-docs].each do |id|
+        assert(!ids.include?(id), "memory-only leaked heavy check #{id}")
       end
       true
     end
