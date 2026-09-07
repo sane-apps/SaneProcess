@@ -21,6 +21,7 @@ file:
 
 | Hook | Type | Purpose |
 |------|------|---------|
+| `session-guardian.sh` | LaunchAgent, 10 min | Reap dead-parent MCP leftovers; page Air on sustained unexpected CPU |
 | `session_start.rb` | SessionStart | Bootstraps session, resets stale state, prints briefing |
 | `saneprompt.rb` | UserPromptSubmit | Classifies prompts and handles commands (`rb-`, `s+`, etc.) |
 | `sanetools.rb` | PreToolUse | Gates edits on research, blocks risky paths/routes, trips circuit breaker |

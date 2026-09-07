@@ -18,7 +18,8 @@ RUBY="/opt/homebrew/opt/ruby/bin/ruby"
 chmod +x \
   "$ROOT/scripts/automation/run-sanecite-monday-sweep.sh" \
   "$ROOT/scripts/automation/run-sanebar-macos27-watch.sh" \
-  "$ROOT/scripts/automation/run-agentmemory-watch.sh"
+  "$ROOT/scripts/automation/run-agentmemory-watch.sh" \
+  "$ROOT/scripts/hooks/session-guardian.sh"
 
 mkdir -p "$AGENTS_DIR" "$OUT"
 
@@ -88,3 +89,4 @@ for label in com.saneapps.sanecite-monday-sweep com.saneapps.sanebar-macos27-wat
   launchctl enable "gui/$uid/$label" 2>/dev/null || true
   echo "installed $label"
 done
+bash "$ROOT/scripts/hooks/session-guardian.sh" --install

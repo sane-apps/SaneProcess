@@ -15,8 +15,10 @@ OUT="$HOME/SaneApps/outputs/recurring-agents"
 chmod +x \
   "$ROOT/scripts/automation/run-app-review-watch.sh" \
   "$ROOT/scripts/automation/run-x-opportunity-scout.sh" \
+  "$ROOT/scripts/automation/run-sanehosts-email-campaign.sh" \
   "$ROOT/scripts/automation/agent-heartbeat.sh" \
-  "$ROOT/scripts/automation/pause-codex-heartbeats.sh"
+  "$ROOT/scripts/automation/pause-codex-heartbeats.sh" \
+  "$ROOT/scripts/hooks/session-guardian.sh"
 
 mkdir -p "$AGENTS_DIR" "$OUT"
 
@@ -104,6 +106,81 @@ if [[ -f "$leftover_scout" ]]; then
 fi
 heartbeat_plist com.saneapps.agent-heartbeat.x-scout sanelot-x-opportunity-scout 10 0
 
+# SaneLot 6-week email campaign (through 2026-10-05): morning send + afternoon replies.
+python3 - <<'PY'
+import plistlib, pathlib
+root = pathlib.Path.home() / "SaneApps/infra/SaneProcess"
+out = pathlib.Path.home() / "SaneApps/outputs/recurring-agents"
+out.mkdir(parents=True, exist_ok=True)
+job_id = "sanelot-email-campaign"
+data = {
+    "Label": "com.saneapps.agent-heartbeat.sanelot-email",
+    "ProgramArguments": [
+        "/bin/bash",
+        str(root / "scripts/automation/agent-heartbeat.sh"),
+        "--id", job_id,
+        "--prompt-file", str(root / "scripts/automation/heartbeats" / f"{job_id}.md"),
+        "--cwd", str(root),
+    ],
+    "StartCalendarInterval": [
+        {"Hour": 8, "Minute": 15},
+        {"Hour": 16, "Minute": 30},
+    ],
+    "RunAtLoad": False,
+    "StandardOutPath": str(out / f"{job_id}.stdout.log"),
+    "StandardErrorPath": str(out / f"{job_id}.stderr.log"),
+    "EnvironmentVariables": {
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_US.UTF-8",
+    },
+}
+path = pathlib.Path.home() / "Library/LaunchAgents/com.saneapps.agent-heartbeat.sanelot-email.plist"
+with path.open("wb") as fh:
+    plistlib.dump(data, fh)
+print(path)
+PY
+launchctl bootout "gui/$(id -u)/com.saneapps.agent-heartbeat.sanelot-email" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$AGENTS_DIR/com.saneapps.agent-heartbeat.sanelot-email.plist"
+echo "installed com.saneapps.agent-heartbeat.sanelot-email"
+
+# SaneHosts 12-week email campaign (2026-09-01 through 2026-11-24).
+# Direct Python — not Grok. Weekdays 08:20 ET. 50 Email 1 / weekday, top-up
+# if a day is short. Does not depend on the Lot job. Do not bootstrap Lot
+# just to refresh this agent.
+python3 - <<'PY'
+import plistlib, pathlib
+root = pathlib.Path.home() / "SaneApps/infra/SaneProcess"
+out = pathlib.Path.home() / "SaneApps/outputs/recurring-agents"
+out.mkdir(parents=True, exist_ok=True)
+data = {
+    "Label": "com.saneapps.sanehosts-email-campaign",
+    "ProgramArguments": [
+        "/bin/bash",
+        str(root / "scripts/automation/run-sanehosts-email-campaign.sh"),
+    ],
+    "StartCalendarInterval": [
+        {"Weekday": weekday, "Hour": 8, "Minute": 20}
+        for weekday in (1, 2, 3, 4, 5)
+    ],
+    "RunAtLoad": False,
+    "StandardOutPath": str(out / "sanehosts-email-campaign.stdout.log"),
+    "StandardErrorPath": str(out / "sanehosts-email-campaign.stderr.log"),
+    "EnvironmentVariables": {
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_US.UTF-8",
+    },
+}
+path = pathlib.Path.home() / "Library/LaunchAgents/com.saneapps.sanehosts-email-campaign.plist"
+with path.open("wb") as fh:
+    plistlib.dump(data, fh)
+print(path)
+PY
+launchctl bootout "gui/$(id -u)/com.saneapps.sanehosts-email-campaign" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$AGENTS_DIR/com.saneapps.sanehosts-email-campaign.plist"
+echo "installed com.saneapps.sanehosts-email-campaign"
+
 python3 - <<'PY'
 import plistlib, pathlib
 root = pathlib.Path.home() / "SaneApps/infra/SaneProcess"
@@ -137,5 +214,6 @@ launchctl bootout "gui/$(id -u)/com.saneapps.agent-heartbeat.ga-llc" 2>/dev/null
 launchctl bootstrap "gui/$(id -u)" "$AGENTS_DIR/com.saneapps.agent-heartbeat.ga-llc.plist"
 
 bash "$ROOT/scripts/automation/pause-codex-heartbeats.sh"
+bash "$ROOT/scripts/hooks/session-guardian.sh" --install
 
 echo "Recurring Mini LaunchAgents installed. See scripts/automation/recurring-jobs.md"
