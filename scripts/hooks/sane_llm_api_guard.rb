@@ -37,7 +37,7 @@ READ_ONLY_SCHEMA = Regexp.union(
   %r{LLM_API_SETUP\.md}
 ).freeze
 
-CANONICAL_HARNESS = %r{(?:scripts/)?llm_bakeoff\.py}.freeze
+CANONICAL_HARNESS = %r{(?:scripts/)?(?:llm_bakeoff|ai_promote)\.py}.freeze
 
 MUTATING_HINT = Regexp.union(
   /\b-X\s*POST\b/i,

@@ -42,6 +42,16 @@ exit(run_tests('Sane LLM API Guard Tests') do
     true
   end
 
+  test('allows ai_promote.py harness') do
+    _out, err, status = run_guard(
+      GUARD,
+      "python3 clients/translations/scripts/ai_promote.py --claim jer-h6 --agent overnight"
+    )
+    assert_eq(status.exitstatus, 0)
+    assert_eq(err.strip, '')
+    true
+  end
+
   test('allows llm_bakeoff.py harness') do
     _out, err, status = run_guard(
       GUARD,
