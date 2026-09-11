@@ -48,7 +48,7 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb sync_control_plane
 | Keep-current | Weekly Sun 09:15 (Air) | `dependency_baseline.rb` | pins/Firecrawl |
 | SaneCite Monday sweep | Weekly Mon 07:00 (Air) | `run-sanecite-monday-sweep.sh` | Claude `sanecite-monday-sweep` |
 | SaneBar macOS 27 watch | Daily 09:00 (Air) | `run-sanebar-macos27-watch.sh` | Codex `revisit-sanebar-after-macos-27` |
-| Fathers free-neuron burn | Daily 21:10 ET (≈01:10 UTC after CF reset) | **Mini** LaunchAgent `com.saneapps.fathers-overnight-quota` → `clients/translations/scripts/run-overnight-quota.sh` | Dual-lane CF + NVIDIA; KeepAlive retries on failure; no Logos/site deploy |
+| Fathers free-neuron burn | Daily 21:10 ET (≈01:10 UTC after CF reset) | **Mini** LaunchAgent `com.saneapps.fathers-overnight-quota` → `clients/translations/scripts/run-overnight-quota.sh` | Dual-lane CF + NVIDIA; calendar-only (no KeepAlive); fcntl.flock global + claim locks; exit 3 / wrapper exit 0 if busy; no Logos/site deploy |
 
 ## Paused / retired
 
@@ -70,6 +70,6 @@ Suggested Air-side automations (create manually in Cursor):
 
 - Weekly control-plane sync reminder if `sync_control_plane` receipt is stale
 - PR review triage on merge-ready repos (optional; overlaps autopilot skill)
-- **Fathers overnight quota (Mini):** LaunchAgent `com.saneapps.fathers-overnight-quota` runs daily 21:10 local. Install: `bash ~/SaneApps/clients/translations/scripts/install-mini-overnight-quota.sh` on the Mini. Dual-lane CF+NVIDIA; resumes stuck `claimed` rows; KeepAlive retries nonzero exits.
+- **Fathers overnight quota (Mini):** LaunchAgent `com.saneapps.fathers-overnight-quota` runs daily 21:10 local. Install: `bash ~/SaneApps/clients/translations/scripts/install-mini-overnight-quota.sh` on the Mini. Dual-lane CF+NVIDIA; resumes stuck `claimed` rows when idle; calendar-only (no KeepAlive); flock single-instance; wall clocks `claim_wall_s` / `overnight_wall_s`. See `clients/translations/docs/AI_CROSSCHECK.md`.
 
 Do not duplicate the Mini LaunchAgent jobs above in Cursor.
