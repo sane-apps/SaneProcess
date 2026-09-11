@@ -36,6 +36,8 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb sync_control_plane
 |-----|----------|--------|----------|
 | App + CWS review watch | Every 15 min | `run-app-review-watch.sh` | Codex `saneapps-app-review-watch` |
 | SaneLot X scout | Daily 10:00 | Grok `sanelot-x-opportunity-scout` | Codex same id; paid X API scout stays disabled |
+| SaneLot email campaign | Daily 08:15 and 16:30 through 2026-10-05 | Grok `sanelot-email-campaign` | Missing Cursor canary timers; Mini heartbeat is the sender. Grokbot is the owner-facing partner via `outputs/sanelot-resend-outreach-2026-08-21/GROKBOT.md`. Plist may exist unloaded; do not reload it as a side effect of Hosts work (40-cap dealer dump). |
+| SaneHosts email campaign | Weekdays 08:20 ET, 2026-09-01 through 2026-11-24 | LaunchAgent + `run-sanehosts-email-campaign.sh` | Direct Python. **50** new Email 1 / weekday plus automatic Email 2/3. Tops up a short day instead of skipping. Own job — does not ride the Lot Grok heartbeat. |
 | SaneApps launch ops | Daily 08:30 | Grok `saneapps-launch-ops` | Codex `saneapps-launch-ops` |
 | Prophecy batch resume | Daily 20:20 | Grok `prophecy-ledger-transcript-batch-resume` | Codex same id |
 | GA LLC registration | Yearly Jan 6 09:07 | Grok `saneapps-ga-llc-annual-registration-reminder` | Codex same id |
@@ -46,6 +48,7 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb sync_control_plane
 | Keep-current | Weekly Sun 09:15 (Air) | `dependency_baseline.rb` | pins/Firecrawl |
 | SaneCite Monday sweep | Weekly Mon 07:00 (Air) | `run-sanecite-monday-sweep.sh` | Claude `sanecite-monday-sweep` |
 | SaneBar macOS 27 watch | Daily 09:00 (Air) | `run-sanebar-macos27-watch.sh` | Codex `revisit-sanebar-after-macos-27` |
+| Fathers free-neuron burn | Daily 21:10 ET (≈01:10 UTC after CF reset) | **Mini** LaunchAgent `com.saneapps.fathers-overnight-quota` → `clients/translations/scripts/run-overnight-quota.sh` | Dual-lane CF + NVIDIA; KeepAlive retries on failure; no Logos/site deploy |
 
 ## Paused / retired
 
@@ -67,5 +70,6 @@ Suggested Air-side automations (create manually in Cursor):
 
 - Weekly control-plane sync reminder if `sync_control_plane` receipt is stale
 - PR review triage on merge-ready repos (optional; overlaps autopilot skill)
+- **Fathers overnight quota (Mini):** LaunchAgent `com.saneapps.fathers-overnight-quota` runs daily 21:10 local. Install: `bash ~/SaneApps/clients/translations/scripts/install-mini-overnight-quota.sh` on the Mini. Dual-lane CF+NVIDIA; resumes stuck `claimed` rows; KeepAlive retries nonzero exits.
 
 Do not duplicate the Mini LaunchAgent jobs above in Cursor.
