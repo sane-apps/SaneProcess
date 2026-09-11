@@ -132,6 +132,10 @@ unless the user explicitly asks for that specific run.
 Do not use Gemini/Google provider paths as standard SaneApps tooling; use
 Apple Docs, macOS Automator, Grok, Codex, Claude, and SaneMaster routes instead.
 
+## Cloudflare Workers AI / NVIDIA NIM
+
+Before any Workers AI or NIM **inference** call, follow `docs/LLM_VENDOR_API_SOP.md`. Use `scripts/llm_api_research_gate.rb` then smoke. Hook: `scripts/hooks/sane_llm_api_guard.rb` (via `sane_bash_guards.rb`). This is separate from the NVIDIA-agent ban (`nv` sweeps / `nvidia_vision`) — NIM draft APIs are allowed only with the SOP/receipt path.
+
 Reviewer count is perspective-driven, not capped by the active client's native
 interactive-thread limit. Use native subagents for stateful/interactive work
 and read-only ephemeral `codex exec` fan-out for isolated perspectives; use
