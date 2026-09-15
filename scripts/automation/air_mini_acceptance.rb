@@ -132,6 +132,12 @@ module SaneAppsAirMiniAcceptance
       payload.is_a?(Hash) && payload['service'] == 'agentmemory' && payload['status'] == 'healthy'
     end
 
+    def agentmemory_livez?(text)
+      payload = json_http_response(text)
+      payload.is_a?(Hash) && payload['service'] == 'agentmemory' &&
+        %w[ok healthy].include?(payload['status'].to_s)
+    end
+
     def agentmemory_search_response?(text)
       payload = json_http_response(text)
       payload.is_a?(Hash) && payload['results'].is_a?(Array) && !payload['results'].empty?
@@ -158,17 +164,20 @@ module SaneAppsAirMiniAcceptance
 
     attr_reader :checks, :commands
 
-    def initialize(repo_root:, home:, mini_host: 'mini', runner: Runner.new, sync: true)
+    def initialize(repo_root:, home:, mini_host: 'mini', runner: Runner.new, sync: true, memory_only: false)
       @repo_root = File.expand_path(repo_root)
       @home = File.expand_path(home)
       @mini_host = mini_host
       @runner = runner
       @sync = sync
+      @memory_only = memory_only
       @checks = []
       @commands = []
     end
 
     def run
+      return run_memory_only if @memory_only
+
       local_host = execute('air-host', 'Air controller identity', 'air', ['/bin/hostname'], timeout: 10) do |text|
         Validators.air_hostname?(text)
       end
@@ -328,6 +337,7 @@ module SaneAppsAirMiniAcceptance
       {
         'mini-mcp-apple-docs' => 37_911,
         'mini-mcp-macos-automator' => 37_913,
+        'mini-mcp-xcode' => 37_915,
         'mini-mcp-serena' => 37_917
       }.each do |id, port|
         payload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"sane-acceptance","version":"1"}}}'
@@ -338,10 +348,35 @@ module SaneAppsAirMiniAcceptance
       end
     end
 
+    def run_memory_only
+      # Thin watch: tunnel + Air REST + Mini livez. No dependency/parity mutation.
+      execute('air-host', 'Air controller identity', 'air', ['/bin/hostname'], timeout: 10) do |text|
+        Validators.air_hostname?(text)
+      end
+      air_agentmemory_checks
+      execute('mini-agentmemory-livez', 'Mini AgentMemory livez', 'mini',
+              ssh('/usr/bin/curl --silent --show-error --fail --max-time 5 -w "\\nhttp=%{http_code}\\n" http://127.0.0.1:3111/agentmemory/livez'),
+              timeout: 20) do |text|
+        Validators.agentmemory_livez?(text)
+      end
+      execute('mini-agentmemory-service', 'Mini AgentMemory restart service', 'mini',
+              ssh('uid=$(/usr/bin/id -u); /bin/launchctl print gui/$uid/com.saneapps.agentmemory'),
+              timeout: 20) do |text|
+        Validators.agentmemory_service_supervised?(text)
+      end
+      checks
+    end
+
     def air_agentmemory_checks
       execute('air-agentmemory-tunnel', 'Air AgentMemory tunnel supervision', 'air',
               ['/bin/launchctl', 'print', "gui/#{Process.uid}/com.saneapps.agentmemory-tunnel"], timeout: 15) do |text|
         Validators.agentmemory_tunnel_supervised?(text)
+      end
+
+      livez = ['/usr/bin/curl', '--silent', '--show-error', '--max-time', '5',
+               '-w', '\nhttp=%{http_code}\n', 'http://127.0.0.1:3111/agentmemory/livez']
+      execute('air-agentmemory-livez', 'Air loopback AgentMemory livez', 'air', livez, timeout: 10) do |text|
+        Validators.agentmemory_livez?(text)
       end
 
       health = ['/usr/bin/curl', '--silent', '--show-error', '--max-time', '5',
@@ -474,11 +509,12 @@ module SaneAppsAirMiniAcceptance
   end
 
   def main(argv)
-    options = { mini: 'mini', sync: true, json: false, plan: false, output: nil }
+    options = { mini: 'mini', sync: true, json: false, plan: false, output: nil, memory_only: false }
     parser = OptionParser.new do |opts|
-      opts.banner = 'Usage: air_mini_acceptance.rb [--mini HOST] [--skip-sync] [--json] [--plan] [--output DIR]'
+      opts.banner = 'Usage: air_mini_acceptance.rb [--mini HOST] [--skip-sync] [--memory-only] [--json] [--plan] [--output DIR]'
       opts.on('--mini HOST') { |value| options[:mini] = value }
       opts.on('--skip-sync') { options[:sync] = false }
+      opts.on('--memory-only') { options[:memory_only] = true }
       opts.on('--json') { options[:json] = true }
       opts.on('--plan') { options[:plan] = true }
       opts.on('--output DIR') { |value| options[:output] = value }
@@ -488,7 +524,8 @@ module SaneAppsAirMiniAcceptance
     repo_root = File.expand_path('../..', __dir__)
     home = Dir.home
     suite = Suite.new(repo_root: repo_root, home: home, mini_host: options[:mini],
-                      runner: options[:plan] ? :plan : Runner.new, sync: options[:sync])
+                      runner: options[:plan] ? :plan : Runner.new, sync: options[:sync],
+                      memory_only: options[:memory_only])
     if options[:plan]
       puts JSON.pretty_generate(suite.plan)
       return 0
@@ -499,9 +536,11 @@ module SaneAppsAirMiniAcceptance
       schema_version: 1,
       generated_at: Time.now.utc.iso8601,
       passed: suite.pass?,
+      memory_only: options[:memory_only],
       checks: suite.checks
     }
-    output = options[:output] || File.join(repo_root, 'outputs/restart-acceptance')
+    default_out = options[:memory_only] ? 'outputs/agentmemory-watch' : 'outputs/restart-acceptance'
+    output = options[:output] || File.join(repo_root, default_out)
     paths = write_receipts(output, payload)
     if options[:json]
       puts JSON.pretty_generate(payload.merge(receipts: paths))

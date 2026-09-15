@@ -200,6 +200,12 @@ exit(run_tests('Mini Memory Guard Tests') do
   test_category('Installer path') do
     test('points the launch agent at the canonical SaneProcess script path') do
       assert_includes(installer_source, '$HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-memory-guard.sh')
+      assert_includes(installer_source, 'com.saneapps.machine-cleanup')
+      assert_includes(installer_source, 'machine_cleanup')
+      assert_includes(installer_source, '--apply')
+      air_args = installer_source.lines.find { |line| line.include?('machine_cleanup') && line.include?('--apply') }
+      assert(air_args, 'expected Air ProgramArguments to invoke machine_cleanup --apply')
+      assert(!air_args.include?('--server'), 'Air nightly hygiene must not invoke Mini server reset')
       true
     end
   end

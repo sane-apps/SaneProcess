@@ -357,10 +357,13 @@ utility onto the server or bulk-upgrading release lockfiles.
 ruby scripts/automation/dependency_baseline.rb --check --role mini
 ruby scripts/automation/dependency_baseline.rb --apply --role mini
 ruby scripts/automation/dependency_baseline.rb --apply --role air
+ruby scripts/SaneMaster.rb keep_current --apply --npm-only --latest --apply-safe-latest --notify --install-agent
 ```
 
+`keep_current` is the unattended lane: weekly Air LaunchAgent `com.saneapps.keep-current` (Sunday 09:15) applies npm pins, auto-bumps `firecrawl-cli` within the same major, and notifies only on drift. Mini nightly applies Mini pins. It does not float `@latest`, does not auto-upgrade Codex/Claude/Grok clients, and does not bulk-upgrade Homebrew.
+
 The baseline keeps Node 24 LTS, Homebrew Ruby, the shared build/release tools,
-and shared MCP packages current. It installs a restart-safe `.zshenv` PATH,
+shared MCP packages, and Firecrawl CLI current. It installs a restart-safe `.zshenv` PATH,
 preserves unrelated shell configuration with a timestamped backup, keeps
 role-specific npm tools separate, and removes the unpinned global Wrangler in
 favor of each repo's explicit release version. It does not upgrade SwiftPM,

@@ -70,6 +70,7 @@ exit(run_tests('Mini Deploy Tests') do
       assert(!script.include?('Active Training Alerts'))
       assert(!script.include?('machine_cleanup --host local --server'))
       assert(script.include?('ruby "$SANEMASTER_SCRIPT" operator_brief'))
+      assert(script.include?('--apply --npm-only --latest --role mini'))
       assert(script.include?('OPERATOR_BRIEF_OUTPUT="$OUTPUT_DIR/operator_brief.md"'))
       assert(script.include?('SANEMASTER_SCRIPT="$CANONICAL_SOURCE_ROOT/infra/SaneProcess/scripts/SaneMaster.rb"'))
       assert(!script.include?('MACHINE_CLEANUP_SCRIPT'))

@@ -262,7 +262,11 @@ exit(run_tests('Memory Sync Tests') do
         assert_includes(ssh, 'ExitOnForwardFailure=yes')
         assert_includes(ssh, 'ServerAliveInterval=15')
         assert_includes(ssh, 'ServerAliveCountMax=3')
-        assert_includes(ssh, '-L 3111:127.0.0.1:3111 mini')
+        assert_includes(ssh, '-L 3111:127.0.0.1:3111')
+        assert_includes(ssh, '-L 37911:127.0.0.1:37911')
+        assert_includes(ssh, '-L 37913:127.0.0.1:37913')
+        assert_includes(ssh, '-L 37915:127.0.0.1:37915')
+        assert_includes(ssh, ' mini')
         true
       end
     end

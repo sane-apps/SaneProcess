@@ -23,6 +23,7 @@
 require 'json'
 require 'shellwords'
 require 'socket'
+require_relative 'core/hook_payload'
 
 module SaneLayoutGuard
   module_function
@@ -48,7 +49,7 @@ module SaneLayoutGuard
     \z
   /ix.freeze
 
-  EDIT_TOOL_PATTERN = /\A(?:Write|Edit|NotebookEdit)\z/i.freeze
+  EDIT_TOOL_PATTERN = /\A(?:Write|Edit|NotebookEdit|StrReplace|WriteFile|search_replace)\z/i.freeze
   SHELLS = %w[sh bash zsh].freeze
   WRAPPERS = %w[env sudo command builtin time nice].freeze
   SSH_OPTIONS_WITH_VALUE = %w[
@@ -402,16 +403,16 @@ module SaneLayoutGuard
 
   def run_stdin_hook!
     begin
-      input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
-    rescue JSON::ParserError, Errno::ENOENT
+      parsed = SaneHookPayload.parse($stdin.read.force_encoding(Encoding::UTF_8))
+    rescue Errno::ENOENT
       exit 0
     end
 
-    tool_name = input['tool_name'].to_s
-    tool_input = input['tool_input'] || {}
+    tool_name = parsed['tool_name']
+    tool_input = parsed['tool_input']
 
-    if tool_name.match?(EDIT_TOOL_PATTERN)
-      path = tool_input['file_path'] || tool_input['path']
+    if SaneHookPayload.edit?(tool_name) || tool_name.match?(EDIT_TOOL_PATTERN)
+      path = parsed['path']
       if (reason = violation_for_path(path))
         warn "🔴 BLOCKED: Project layout violation"
         warn "   #{reason}"
@@ -422,9 +423,9 @@ module SaneLayoutGuard
       exit 0
     end
 
-    exit 0 unless tool_name == 'Bash'
+    exit 0 unless SaneHookPayload.shell?(tool_name) || (tool_name.empty? && !parsed['command'].empty?)
 
-    command = tool_input['command'].to_s
+    command = parsed['command']
     exit 0 if command.empty?
 
     if (reason = violation_for_bash(command))

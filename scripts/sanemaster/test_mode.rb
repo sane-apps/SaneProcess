@@ -1316,7 +1316,7 @@ module SaneMasterModules
 
       ENV.each_with_object({}) do |(key, value), vars|
         next if value.nil? || value.empty?
-        next unless key.start_with?('SANEVIDEO_') || allowed_exact.include?(key)
+        next unless key.start_with?('SANEVIDEO_', 'SANEHOSTS_') || allowed_exact.include?(key)
 
         vars[key] = value
       end

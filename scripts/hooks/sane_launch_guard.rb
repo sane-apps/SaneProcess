@@ -16,6 +16,7 @@
 
 require 'json'
 require 'socket'
+require_relative 'core/hook_payload'
 require_relative 'core/local_ui_guard'
 
 SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneScan SaneSync SaneVideo].freeze
@@ -120,20 +121,20 @@ def running_on_macbook_air?
 end
 
 begin
-  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
-rescue JSON::ParserError, Errno::ENOENT
+  parsed = SaneHookPayload.parse($stdin.read.force_encoding(Encoding::UTF_8))
+rescue Errno::ENOENT
   exit 0
 end
 
-tool_name = input['tool_name']
+tool_name = parsed['tool_name']
 
 if tool_name.to_s.match?(LOCAL_UI_TOOL_PATTERN) &&
    running_on_macbook_air? &&
    ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] != LOCAL_UI_APPROVAL &&
    ENV['SANE_MINI_UNAVAILABLE'] != MINI_UNAVAILABLE_APPROVAL
-  target = (input['tool_input'] || {})['app'] ||
-           (input['tool_input'] || {})['application'] ||
-           (input['tool_input'] || {})['url'] ||
+  target = parsed['tool_input']['app'] ||
+           parsed['tool_input']['application'] ||
+           parsed['tool_input']['url'] ||
            'local UI'
   warn '🔴 BLOCKED: Local MacBook UI control'
   warn "   Tool: #{tool_name}"
@@ -146,9 +147,9 @@ if tool_name.to_s.match?(LOCAL_UI_TOOL_PATTERN) &&
   exit 2
 end
 
-exit 0 unless tool_name == 'Bash'
+exit 0 unless SaneHookPayload.shell?(tool_name) || (tool_name.empty? && !parsed['command'].empty?)
 
-command = (input['tool_input'] || {})['command'].to_s
+command = parsed['command']
 exit 0 if command.empty?
 
 if command.match?(LOCAL_DASHBOARD_OPEN_PATTERN) &&

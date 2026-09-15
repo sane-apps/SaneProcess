@@ -881,14 +881,10 @@ set_app_mode_keychain_local() {
 
   case "$mode" in
     pro)
-      run_keychain_swift_local "$(swift_keychain_upsert_script)" \
-        APP_TEST_SERVICE="$service" \
-        APP_TEST_LICENSE_KEY_NAME="$key_name" \
-        APP_TEST_LICENSE_KEY_VALUE="$pro_value" \
-        APP_TEST_LICENSE_EMAIL_NAME="$email_name" \
-        APP_TEST_LICENSE_EMAIL_VALUE="$email_value" \
-        APP_TEST_LICENSE_DATE_NAME="$date_name" \
-        APP_TEST_LAST_VALIDATION="$now"
+      # Do not write login-keychain items from unsigned `swift -`.
+      # That binds the ACL to the Swift interpreter, so the real app
+      # prompts after every OS update. Defaults fallback is enough.
+      echo "$app: skipping unsigned keychain seed (defaults fallback only)"
       ;;
     basic)
       run_keychain_swift_local "$(swift_keychain_delete_script)" \

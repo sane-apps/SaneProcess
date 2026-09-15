@@ -442,7 +442,8 @@ module SaneMasterModules
     end
 
     def customer_ui_air_fallback_approved?
-      ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR'
+      ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR' ||
+        ENV['SANE_MINI_UNAVAILABLE'] == 'MR. SANE CONFIRMS MINI UNAVAILABLE'
     end
 
     def customer_ui_receipt_host_allowed?(host)

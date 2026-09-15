@@ -40,13 +40,13 @@ end
 def blocking_hook_commands(masked: false, include_task_completed: true)
   suffix = masked ? ' || true' : ''
   commands = {
-    'SessionStart' => 'if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb; else exit 0; fi',
-    'UserPromptSubmit' => 'if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb; else exit 0; fi',
-    'PreToolUse' => 'if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb; else exit 0; fi',
-    'PostToolUse' => 'if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb; else exit 0; fi',
-    'Stop' => 'if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb; else exit 0; fi'
+    'SessionStart' => '~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh session_start.rb',
+    'UserPromptSubmit' => '~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh saneprompt.rb',
+    'PreToolUse' => '~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanetools.rb',
+    'PostToolUse' => '~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanetrack.rb',
+    'Stop' => '~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanestop.rb'
   }
-  commands['TaskCompleted'] = 'if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb; else exit 0; fi' if include_task_completed
+  commands['TaskCompleted'] = '~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh task_completed_gate.rb' if include_task_completed
   commands.transform_values { |command| "#{command}#{suffix}" }
 end
 

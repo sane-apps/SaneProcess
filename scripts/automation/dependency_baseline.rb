@@ -46,11 +46,15 @@ module SaneAppsDependencyBaseline
     '@modelcontextprotocol/sdk' => '1.29.0',
     '@modelcontextprotocol/server-github' => '2025.4.8',
     '@mweinbach/apple-docs-mcp' => '1.3.1',
-    '@steipete/macos-automator-mcp' => '0.4.5',
+    '@steipete/macos-automator-mcp' => '0.4.6',
     '@upstash/context7-mcp' => '3.2.3',
-    'firecrawl-cli' => '1.19.26',
+    'firecrawl-cli' => '1.23.1',
     'playwright' => '1.61.1'
-  }.freeze
+  }
+  # Same-major npm bumps that keep_current may apply without a human prompt.
+  # Only packages whose pin lives solely in this file.
+  SAFE_AUTO_BUMP = %w[firecrawl-cli].freeze
+  KEEP_CURRENT_LABEL = 'com.saneapps.keep-current'.freeze
   # Node's Homebrew LTS bottle supplies the matching npm. A separately updated
   # global npm creates a second CLI version and changes which binary PATH finds.
   FORBIDDEN_GLOBAL_NPM = %w[wrangler npm @modelcontextprotocol/server-memory].freeze
@@ -184,12 +188,160 @@ module SaneAppsDependencyBaseline
     JSON.parse(stdout).fetch('dependencies', {}).transform_values { |entry| entry['version'] }
   end
 
-  def apply_formulae(role)
+  def apply_formulae(role, upgrade: true)
     installed = formula_state(role).to_h { |entry| [entry[:name], entry[:installed].any?] }
     missing = formulae(role).reject { |name| installed[name] }
     present = formulae(role).select { |name| installed[name] }
     run!(BREW, 'install', *missing) if missing.any?
-    run!(BREW, 'upgrade', *present) if present.any?
+    run!(BREW, 'upgrade', *present) if upgrade && present.any?
+  end
+
+  def npm_latest(name, home)
+    run!(File.join(NODE_BIN, 'npm'), 'view', name, 'version', env: npm_env(home)).strip
+  end
+
+  def same_major?(left, right)
+    left.to_s.split('.').first == right.to_s.split('.').first
+  end
+
+  def latest_report(role, home)
+    npm_packages(role).map do |name|
+      pin = NPM_VERSIONS.fetch(name)
+      latest = npm_latest(name, home)
+      {
+        name: name,
+        pin: pin,
+        latest: latest,
+        drift: pin != latest,
+        auto: SAFE_AUTO_BUMP.include?(name) && same_major?(pin, latest)
+      }
+    end
+  end
+
+  def rewrite_pin!(name, new_version)
+    path = File.expand_path(__FILE__)
+    source = File.read(path, encoding: 'UTF-8')
+    old = "'#{name}' => '#{NPM_VERSIONS.fetch(name)}'"
+    updated = "'#{name}' => '#{new_version}'"
+    raise "pin line missing for #{name}" unless source.include?(old)
+
+    File.write(path, source.sub(old, updated))
+    NPM_VERSIONS[name] = new_version
+  end
+
+  def apply_safe_latest(role, home)
+    bumped = []
+    latest_report(role, home).each do |row|
+      next unless row[:auto] && row[:drift]
+
+      rewrite_pin!(row[:name], row[:latest])
+      bumped << "#{row[:name]} #{row[:pin]} -> #{row[:latest]}"
+    end
+    apply_npm(role, home) if bumped.any?
+    bumped
+  end
+
+  def client_version_rows
+    rows = []
+    grok = File.expand_path('~/.grok/version.json')
+    if File.file?(grok)
+      data = JSON.parse(File.read(grok))
+      rows << {
+        name: 'grok',
+        have: data['version'].to_s,
+        latest: data['stable_version'].to_s,
+        drift: data['version'].to_s != data['stable_version'].to_s
+      }
+    end
+    %w[claude codex].each do |name|
+      stdout, _stderr, status = Open3.capture3(name, '--version')
+      next unless status.success?
+
+      have = stdout.to_s.strip
+      next if have.empty?
+
+      rows << { name: name, have: have.split.first, latest: name == 'claude' ? 'autoUpdates' : 'manual', drift: false }
+    rescue Errno::ENOENT
+      next
+    end
+    rows
+  end
+
+  def notify!(title, body)
+    escaped = body.to_s.gsub('\\', '\\\\').gsub('"', '\\"')
+    capture('/usr/bin/osascript', '-e',
+            %(display notification "#{escaped}" with title "#{title}" sound name "Glass"))
+  end
+
+  def write_receipt(payload)
+    dir = File.expand_path('~/SaneApps/outputs/keep-current')
+    FileUtils.mkdir_p(dir)
+    stamp = Time.now.utc.strftime('%Y%m%dT%H%M%SZ')
+    path = File.join(dir, "#{stamp}.json")
+    File.write(path, JSON.pretty_generate(payload))
+    latest = File.join(dir, 'latest.json')
+    File.write(latest, JSON.pretty_generate(payload))
+    path
+  end
+
+  def install_keep_current_agent(home:)
+    raise 'keep-current LaunchAgent belongs on the Air controller' if role_for == :mini
+
+    label = KEEP_CURRENT_LABEL
+    plist = File.join(home, 'Library', 'LaunchAgents', "#{label}.plist")
+    log_dir = File.expand_path('~/SaneApps/outputs')
+    FileUtils.mkdir_p([File.dirname(plist), log_dir])
+    script = File.expand_path(__FILE__)
+    ruby = File.join(RUBY_BIN, 'ruby')
+    File.write(plist, <<~PLIST)
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+      <dict>
+        <key>Label</key>
+        <string>#{label}</string>
+        <key>ProgramArguments</key>
+        <array>
+          <string>#{ruby}</string>
+          <string>#{script}</string>
+          <string>--apply</string>
+          <string>--npm-only</string>
+          <string>--latest</string>
+          <string>--apply-safe-latest</string>
+          <string>--notify</string>
+          <string>--role</string>
+          <string>air</string>
+        </array>
+        <key>StartCalendarInterval</key>
+        <dict>
+          <key>Weekday</key>
+          <integer>0</integer>
+          <key>Hour</key>
+          <integer>9</integer>
+          <key>Minute</key>
+          <integer>15</integer>
+        </dict>
+        <key>Nice</key>
+        <integer>10</integer>
+        <key>StandardOutPath</key>
+        <string>#{log_dir}/keep-current.stdout.log</string>
+        <key>StandardErrorPath</key>
+        <string>#{log_dir}/keep-current.stderr.log</string>
+        <key>EnvironmentVariables</key>
+        <dict>
+          <key>HOME</key>
+          <string>#{home}</string>
+          <key>PATH</key>
+          <string>#{managed_path(home)}</string>
+        </dict>
+      </dict>
+      </plist>
+    PLIST
+    uid = Process.uid
+    capture('/bin/launchctl', 'bootout', "gui/#{uid}/#{label}")
+    run!('/bin/launchctl', 'bootstrap', "gui/#{uid}", plist)
+    capture('/bin/launchctl', 'enable', "gui/#{uid}/#{label}")
+    "installed LaunchAgent #{plist}"
   end
 
   def apply_npm(role, home)
@@ -201,14 +353,16 @@ module SaneAppsDependencyBaseline
     end
   end
 
-  def check(role:, home:)
+  def check(role:, home:, npm_only: false)
     problems = []
-    shell_ok, shell_message = install_shell_baseline(home: home, apply: false)
-    problems << shell_message unless shell_ok
+    unless npm_only
+      shell_ok, shell_message = install_shell_baseline(home: home, apply: false)
+      problems << shell_message unless shell_ok
 
-    formula_state(role).each do |entry|
-      problems << "missing formula: #{entry[:name]}" if entry[:installed].empty?
-      problems << "outdated formula: #{entry[:name]} -> #{entry[:stable]}" if entry[:outdated]
+      formula_state(role).each do |entry|
+        problems << "missing formula: #{entry[:name]}" if entry[:installed].empty?
+        problems << "outdated formula: #{entry[:name]} -> #{entry[:stable]}" if entry[:outdated]
+      end
     end
 
     node = File.join(NODE_BIN, 'node')
@@ -225,13 +379,21 @@ module SaneAppsDependencyBaseline
   end
 
   def main(argv)
-    options = { apply: false, role: nil, refresh: false }
+    options = {
+      apply: false, role: nil, refresh: false, npm_only: false,
+      latest: false, apply_safe_latest: false, notify: false, install_agent: false
+    }
     OptionParser.new do |parser|
-      parser.banner = 'Usage: dependency_baseline.rb [--check|--apply] [--role air|mini] [--refresh]'
+      parser.banner = 'Usage: dependency_baseline.rb [--check|--apply] [--role air|mini] [--refresh] [--npm-only] [--latest] [--apply-safe-latest] [--notify] [--install-agent]'
       parser.on('--check') { options[:apply] = false }
       parser.on('--apply') { options[:apply] = true }
       parser.on('--role ROLE', %w[air mini]) { |value| options[:role] = value.to_sym }
       parser.on('--refresh') { options[:refresh] = true }
+      parser.on('--npm-only') { options[:npm_only] = true }
+      parser.on('--latest') { options[:latest] = true }
+      parser.on('--apply-safe-latest') { options[:apply_safe_latest] = true }
+      parser.on('--notify') { options[:notify] = true }
+      parser.on('--install-agent') { options[:install_agent] = true }
     end.parse!(argv)
 
     home = Dir.home
@@ -239,24 +401,63 @@ module SaneAppsDependencyBaseline
     ENV['PATH'] = managed_path(home)
     puts "SaneApps dependency baseline role=#{role} mode=#{options[:apply] ? 'apply' : 'check'}"
 
-    run!(BREW, 'update') if options[:apply] && options[:refresh]
+    if options[:install_agent]
+      puts install_keep_current_agent(home: home)
+    end
+
+    run!(BREW, 'update') if options[:apply] && options[:refresh] && !options[:npm_only]
     if options[:apply]
-      apply_formulae(role)
-      ok, message = install_shell_baseline(home: home, apply: true)
-      raise message unless ok
-      puts message
+      apply_formulae(role, upgrade: !options[:npm_only]) unless options[:npm_only]
+      unless options[:npm_only]
+        ok, message = install_shell_baseline(home: home, apply: true)
+        raise message unless ok
+        puts message
+      end
       apply_npm(role, home)
     end
 
-    ok, problems = check(role: role, home: home)
-    if ok
+    bumped = []
+    latest_rows = []
+    if options[:apply_safe_latest] || options[:latest]
+      latest_rows = latest_report(role, home)
+      latest_rows.each do |row|
+        next unless row[:drift]
+
+        puts "latest drift: #{row[:name]} pin=#{row[:pin]} latest=#{row[:latest]} auto=#{row[:auto]}"
+      end
+    end
+    if options[:apply_safe_latest]
+      bumped = apply_safe_latest(role, home)
+      bumped.each { |line| puts "auto-bumped #{line}" }
+    end
+
+    ok, problems = check(role: role, home: home, npm_only: options[:npm_only])
+    receipt = write_receipt(
+      generated_at: Time.now.utc.iso8601,
+      role: role.to_s,
+      apply: options[:apply],
+      npm_only: options[:npm_only],
+      ok: ok,
+      problems: problems,
+      latest: latest_rows,
+      bumped: bumped,
+      clients: client_version_rows
+    )
+    puts "receipt #{receipt}"
+
+    notable = problems + bumped + latest_rows.select { |row| row[:drift] }.map { |row| "#{row[:name]} #{row[:pin]} < #{row[:latest]}" }
+    if options[:notify] && notable.any?
+      notify!('SaneApps keep-current', notable.first(3).join('; '))
+    end
+
+    if ok && bumped.empty?
       puts 'PASS dependency baseline current'
       return 0
     end
 
     problems.each { |problem| warn "- #{problem}" }
-    warn 'FAIL dependency baseline drift detected'
-    1
+    warn 'FAIL dependency baseline drift detected' unless ok
+    ok ? 0 : 1
   rescue StandardError => e
     warn "ERROR #{e.message}"
     2

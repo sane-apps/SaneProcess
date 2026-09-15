@@ -134,6 +134,8 @@ ssh mini 'launchctl print gui/$(id -u)/com.saneapps.agentmemory'
 ssh mini '/opt/homebrew/bin/agentmemory status'
 ```
 
+`scripts/hooks/session-guardian.sh` is the 10-minute Air/Mini job for orphan MCP reaping and sustained unexpected CPU. It compares 5-minute load to core count, ignores expected work (builds, signed SaneApps, coding apps, Mini Brave, work-session caffeinate), and notifies only on the Air after two consecutive hits. Mini never kills live work and never pops a local CPU banner. Install with `bash scripts/hooks/session-guardian.sh --install`.
+
 ### Source Custody Receipts
 
 Use the focused custody lane when current source must be preserved without

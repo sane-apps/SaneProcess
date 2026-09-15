@@ -59,8 +59,12 @@ all_packages = (
 ).uniq.sort
 assert(SaneAppsDependencyBaseline::NPM_VERSIONS.keys.sort == all_packages,
        'every managed npm package must have exactly one version pin')
-assert(SaneAppsDependencyBaseline::NPM_VERSIONS['@steipete/macos-automator-mcp'] == '0.4.5',
+assert(SaneAppsDependencyBaseline::NPM_VERSIONS['@steipete/macos-automator-mcp'] == '0.4.6',
        'macOS Automator MCP pin drifted')
+assert(SaneAppsDependencyBaseline::NPM_VERSIONS['firecrawl-cli'] == '1.23.1',
+       'Firecrawl CLI pin drifted')
+assert(SaneAppsDependencyBaseline::SAFE_AUTO_BUMP == %w[firecrawl-cli],
+       'keep-current auto-bump allowlist drifted')
 assert(SaneAppsDependencyBaseline::NPM_VERSIONS['@upstash/context7-mcp'] == '3.2.3',
        'Context7 MCP pin drifted')
 assert(SaneAppsDependencyBaseline.npm_specs(:mini).include?('@agentmemory/agentmemory@0.9.27'),
@@ -75,8 +79,22 @@ assert(SaneAppsDependencyBaseline.npm_version_problems(:mini, mini_installed).em
        'exact Mini package pins should pass')
 
 drifted = mini_installed.merge('@steipete/macos-automator-mcp' => '0.4.1')
-assert(SaneAppsDependencyBaseline.npm_version_problems(:mini, drifted).any? { |problem| problem.include?('0.4.1 != 0.4.5') },
+assert(SaneAppsDependencyBaseline.npm_version_problems(:mini, drifted).any? { |problem| problem.include?('0.4.1 != 0.4.6') },
        'version drift must fail the dependency check')
+assert(SaneAppsDependencyBaseline.same_major?('1.19.26', '1.23.1'),
+       'Firecrawl minor bumps stay auto-eligible')
+assert(!SaneAppsDependencyBaseline.same_major?('1.23.1', '2.0.0'),
+       'Firecrawl major bumps must not auto-apply')
+grok_bin = File.expand_path('../grok-bin', __dir__)
+%w[cloudflare-mcp-remote.sh xcode-mcp.sh xcode-mcp-frame.py].each do |name|
+  path = File.join(grok_bin, name)
+  assert(File.executable?(path), "git-owned grok helper missing: #{path}")
+end
+sync = File.read(File.expand_path('sync-grok-mini.sh', __dir__))
+assert(!sync.include?('rsync -az --delete "$REPO_GROK_BIN_DIR/"'),
+       'sync_grok must not --delete ~/.grok/bin')
+assert(SaneAppsDependencyBaseline::SAFE_AUTO_BUMP.none? { |name| name.include?('macos-automator') },
+       'macos-automator pin is shared across singleton files; do not auto-rewrite it')
 
 forbidden = mini_installed.merge('npm' => '99.0.0')
 assert(SaneAppsDependencyBaseline.npm_version_problems(:mini, forbidden).include?('forbidden global npm package: npm'),

@@ -137,7 +137,7 @@ module SaneMasterModules
         'github' => { package: '@modelcontextprotocol/server-github@2025.4.8', required: true },
         'context7' => { package: '@upstash/context7-mcp@3.2.3', required: false },
         'xcode' => { package: 'mcpbridge', required: true },
-        'macos-automator' => { package: '@steipete/macos-automator-mcp@0.4.5', required: true },
+        'macos-automator' => { package: '@steipete/macos-automator-mcp@0.4.6', required: true },
         'openaiDeveloperDocs' => { package: 'https://developers.openai.com/mcp', required: true }
       }
 
