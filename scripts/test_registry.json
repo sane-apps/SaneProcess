@@ -119,6 +119,15 @@
       ]
     },
     {
+      "path": "scripts/setapp_config_test.rb",
+      "label": "SaneProcess Setapp config tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/setapp_config_test.rb"
+      ]
+    },
+    {
       "path": "scripts/setapp_status_test.rb",
       "label": "SaneProcess Setapp status tests",
       "status": "required",
