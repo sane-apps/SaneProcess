@@ -618,6 +618,45 @@ module SaneToolsChecks
       nil
     end
 
+    # Mechanical completeness check for subagent work orders. A vague brief
+    # gets executed wrongly at full speed, so edit tasks must pin down host,
+    # scope, done criteria, and the no-commit rule before spawning.
+    # brief_gaps is pure (unit-tested); the wrapper adds tool/host gating.
+    def brief_gaps(prompt, edit_keywords)
+      text = prompt.to_s
+      return [] unless edit_keywords.any? { |kw| text.downcase.include?(kw) }
+
+      missing = []
+      unless text.match?(/\bmini\b|\bair\b|ssh mini/i)
+        missing << 'HOST: name the machine and access path (e.g. "on the Mini via ssh mini") and forbid stale checkouts by path'
+      end
+      unless text.match?(%r{~/|SaneApps/|books/|scripts/|pipeline/|outputs/|websites/|apps/|infra/}i)
+        missing << 'SCOPE: exact repo paths or scope files the task ends at'
+      end
+      unless text.match?(/exit 0|acceptance|done when|expected output|\bgreen\b|\bpass\b|\bpasses\b|\bpassed\b|must (show|report|return)/i)
+        missing << 'DONE: literal acceptance commands with expected outputs (e.g. gate exit 0, test counts)'
+      end
+      unless text.match?(/commit nothing|never commit|do not commit|uncommitted|no commit/i)
+        missing << 'NO-COMMIT: state that the worker commits nothing'
+      end
+      missing
+    end
+
+    def check_brief_completeness(tool_name, tool_input, edit_keywords)
+      return nil unless tool_name == 'Task'
+      # Exempt SaneProcess self-development (see SaneProjectRoot.self_development?).
+      return nil if SaneProjectRoot.self_development?
+
+      prompt = tool_input['prompt'] || tool_input[:prompt] || ''
+      missing = brief_gaps(prompt, edit_keywords)
+      return nil if missing.empty?
+
+      "BRIEF INCOMPLETE — BLOCKED\n" \
+      "Task work order is missing:\n" \
+      "#{missing.map { |m| "  - #{m}\n" }.join}" \
+      "Add one line per item and respawn.\n"
+    end
+
     def check_circuit_breaker
       cb = StateManager.get(:circuit_breaker)
       return nil unless cb[:tripped]

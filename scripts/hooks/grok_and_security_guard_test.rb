@@ -941,9 +941,39 @@ _, noisy_err, noisy_status = run_ruby_hook(
 )
 t('Noisy passive tracking hook still no-ops under Grok hook event', noisy_status.exitstatus == 0 && noisy_err.empty?)
 
+Dir.mktmpdir('sane-security-no-prompt-test-') do |dir|
+  log = File.join(dir, 'calls')
+  fake = File.join(dir, 'security')
+  File.write(fake, "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$FAKE_SECURITY_LOG\"\n")
+  File.chmod(0o755, fake)
+  clean = %w[CODEX_SHELL CLAUDE_CODE CLAUDE_WORKTREES GROK_HOOK_EVENT GROK_SESSION_ID
+             SANE_NO_KEYCHAIN SANE_KEYCHAIN_FALLBACK SANE_ALLOW_KEYCHAIN_PROMPTS].to_h { |key| [key, nil] }
+  env = clean.merge('SANE_REAL_SECURITY' => fake, 'FAKE_SECURITY_LOG' => log, 'TMPDIR' => dir)
+  { 'SANE_NO_KEYCHAIN' => '1', 'SANE_KEYCHAIN_FALLBACK' => '0',
+    'SANE_ALLOW_KEYCHAIN_PROMPTS' => '0' }.each do |flag, value|
+    [nil, '1'].each do |ai|
+      policy = env.merge(flag => value, 'CLAUDE_CODE' => ai)
+      %w[find-generic-password find-internet-password dump-keychain].each do |command|
+        before = File.exist?(log) ? File.read(log) : ''
+        _, err, status = Open3.capture3(policy, 'bash', File.join(HOOK_DIR, 'sane_security_guard.sh'),
+                                      command, '-s', 'Claude Code', '-w')
+        after = File.exist?(log) ? File.read(log) : ''
+        t("#{flag} blocks #{command} before execution (AI=#{!ai.nil?})",
+          status.exitstatus == 2 && err.include?('no-prompt policy') && before == after)
+      end
+      _, _, status = Open3.capture3(policy, 'bash', File.join(HOOK_DIR, 'sane_security_guard.sh'), 'show-keychain-info')
+      t("#{flag} permits metadata (AI=#{!ai.nil?})",
+        status.success? && File.readlines(log).last.strip == 'show-keychain-info')
+    end
+  end
+end
+
 Dir.mktmpdir('sane-security-guard-test-') do |dir|
   env = {
     'CLAUDE_CODE' => '1',
+    'SANE_NO_KEYCHAIN' => nil,
+    'SANE_KEYCHAIN_FALLBACK' => nil,
+    'SANE_ALLOW_KEYCHAIN_PROMPTS' => nil,
     'TMPDIR' => dir,
     'SANE_REAL_SECURITY' => '/usr/bin/true',
     'SANE_SECURITY_REPEAT_COOLDOWN_SECONDS' => '300',

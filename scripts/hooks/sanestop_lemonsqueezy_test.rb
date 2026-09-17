@@ -119,7 +119,7 @@ end
 
 require 'open3'
 
-check('stages the latest ZIP and trashes a dated one, leaving other apps alone') do
+check('stages the latest ZIP and retains earlier archives, leaving other apps alone') do
   proj = fake_project('SaneBar', '2.1.84')
   uploads = Dir.mktmpdir('ls_uploads')
   File.write(File.join(uploads, 'SaneBar-2.1.80.zip'), 'old')
@@ -127,7 +127,19 @@ check('stages the latest ZIP and trashes a dated one, leaving other apps alone')
   res, code = run_stage(proj, uploads)
   files = Dir.glob(File.join(uploads, '*.zip')).map { |p| File.basename(p) }.sort
   code.zero? && res['status'] == 'staged' &&
-    files == ['SaneBar-2.1.84.zip', 'SaneClick-1.1.12.zip']
+    files == ['SaneBar-2.1.80.zip', 'SaneBar-2.1.84.zip', 'SaneClick-1.1.12.zip']
+end
+
+check('same-sized stale ZIP is replaced by verified bytes and prior bytes retained') do
+  proj = fake_project('SaneBar', '2.1.84')
+  uploads = Dir.mktmpdir('ls_uploads')
+  target = File.join(uploads, 'SaneBar-2.1.84.zip')
+  File.write(target, 'WRONG12345678')
+  res, code = run_stage(proj, uploads)
+  previous = Dir.glob("#{target}.previous-*")
+  code.zero? && res['status'] == 'staged' && File.read(target) == 'ARTIFACT-BYTES' &&
+    previous.length == 1 && File.read(previous.first) == 'WRONG12345678' &&
+    res['sha256'] == Digest::SHA256.hexdigest('ARTIFACT-BYTES')
 end
 
 check('idempotent: a second run reports current, no churn') do
@@ -166,7 +178,7 @@ check('SaneHosts resolves 1.1.22 from Config/Shared.xcconfig when project.yml is
   StageLemonSqueezyUploads.marketing_version(proj) == '1.1.22'
 end
 
-check('xcconfig project stages the current ZIP and removes the stale one (end-to-end)') do
+check('xcconfig project stages the current ZIP and retains the earlier one (end-to-end)') do
   proj = fake_xcconfig_project('SaneHosts', '1.1.22')
   uploads = Dir.mktmpdir('ls_uploads')
   File.write(File.join(uploads, 'SaneHosts-1.1.20.zip'), 'stale-build-with-known-bugs')
@@ -174,7 +186,7 @@ check('xcconfig project stages the current ZIP and removes the stale one (end-to
   res, code = run_stage(proj, uploads)
   files = Dir.glob(File.join(uploads, '*.zip')).map { |p| File.basename(p) }.sort
   code.zero? && res['status'] == 'staged' &&
-    files == ['SaneBar-2.1.89.zip', 'SaneHosts-1.1.22.zip']
+    files == ['SaneBar-2.1.89.zip', 'SaneHosts-1.1.20.zip', 'SaneHosts-1.1.22.zip']
 end
 
 check('project.yml apps still resolve (xcconfig fallback did not regress them)') do

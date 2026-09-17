@@ -12,6 +12,24 @@ HOOK_DIR = File.expand_path(__dir__)
 HOOK = File.join(HOOK_DIR, 'sane_layout_guard.rb')
 HOME = Dir.home
 
+def with_forced_host(role)
+  air_key = 'SANE_FORCE_MACBOOK_AIR_FOR_TEST'
+  mini_key = 'SANE_FORCE_MAC_MINI_FOR_TEST'
+  old_air = ENV[air_key]
+  old_mini = ENV[mini_key]
+  if role == :air
+    ENV[air_key] = '1'
+    ENV.delete(mini_key)
+  else
+    ENV[mini_key] = '1'
+    ENV.delete(air_key)
+  end
+  yield
+ensure
+  ENV[air_key] = old_air
+  ENV[mini_key] = old_mini
+end
+
 def run_guard(payload, env: {})
   Open3.capture3(
     env,
@@ -37,6 +55,22 @@ def bash_payload(command)
 end
 
 exit(run_tests('Sane Layout Guard Tests') do
+  test_category('Cursor search_replace adapter') do
+    test('denies invalid layouts and allows canonical paths without editing files') do
+      hook = File.join(HOOK_DIR, 'cursor/layout_pre_tool_use.rb')
+      {
+        "#{HOME}/SaneApps/Users/sj/apps/Foo/file.swift" => 'deny',
+        "#{HOME}/SaneApps/infra/SaneProcess/README.md" => 'allow'
+      }.each do |path, expected|
+        payload = { 'tool_name' => 'search_replace', 'arguments' => { 'file_path' => path } }
+        output, error, status = Open3.capture3('ruby', hook, stdin_data: JSON.generate(payload))
+        assert(status.success?, error)
+        assert_eq(JSON.parse(output)['permission'], expected)
+      end
+      true
+    end
+  end
+
   test_category('Write / path checks') do
     test('blocks Write to nested fake Air tree under Mini home') do
       path = "#{HOME}/Users/sj/SaneApps/apps/Foo"
@@ -75,13 +109,28 @@ exit(run_tests('Sane Layout Guard Tests') do
       true
     end
 
-    test('allows Write under SaneApps/apps') do
+    test('allows Write under SaneApps/apps on Mini') do
       path = "#{HOME}/SaneApps/apps/SaneClip/README.md"
-      assert_eq(SaneLayoutGuard.violation_for_path(path), nil)
+      with_forced_host(:mini) do
+        assert_eq(SaneLayoutGuard.violation_for_path(path), nil)
+        _out, err, status = run_guard(write_payload(path))
+        assert_eq(status.exitstatus, 0)
+        assert_eq(err.strip, '')
+      end
+      true
+    end
 
-      _out, err, status = run_guard(write_payload(path))
-      assert_eq(status.exitstatus, 0)
-      assert_eq(err.strip, '')
+    test('blocks Write under SaneApps/apps on Air controller') do
+      path = "#{HOME}/SaneApps/apps/SaneClip/project.yml"
+      with_forced_host(:air) do
+        reason = SaneLayoutGuard.violation_for_path(path)
+        assert(reason, 'expected Air app-edit violation')
+        assert_includes(reason, 'AIR CONTROLLER APP EDIT BLOCKED')
+        assert_includes(reason, 'air-controller')
+        _out, err, status = run_guard(write_payload(path))
+        assert_eq(status.exitstatus, 2)
+        assert_includes(err, 'AIR CONTROLLER APP EDIT BLOCKED')
+      end
       true
     end
 
@@ -152,19 +201,22 @@ exit(run_tests('Sane Layout Guard Tests') do
       true
     end
 
-    test('allows shell $HOME expansion into SaneApps') do
-      assert_eq(SaneLayoutGuard.violation_for_bash('mkdir -p $HOME/SaneApps/apps/Foo'), nil)
-      assert_eq(SaneLayoutGuard.violation_for_bash('mkdir -p $HOME/Desktop/Screenshots/x'), nil)
+    test('allows shell $HOME expansion into SaneApps on Mini') do
+      with_forced_host(:mini) do
+        assert_eq(SaneLayoutGuard.violation_for_bash('mkdir -p $HOME/SaneApps/apps/Foo'), nil)
+        assert_eq(SaneLayoutGuard.violation_for_bash('mkdir -p $HOME/Desktop/Screenshots/x'), nil)
+      end
       true
     end
 
-    test('allows mkdir under SaneApps/apps') do
+    test('allows mkdir under SaneApps/apps on Mini') do
       cmd = 'mkdir -p ~/SaneApps/apps/Foo'
-      assert_eq(SaneLayoutGuard.violation_for_bash(cmd), nil)
-
-      _out, err, status = run_guard(bash_payload(cmd))
-      assert_eq(status.exitstatus, 0)
-      assert_eq(err.strip, '')
+      with_forced_host(:mini) do
+        assert_eq(SaneLayoutGuard.violation_for_bash(cmd), nil)
+        _out, err, status = run_guard(bash_payload(cmd))
+        assert_eq(status.exitstatus, 0)
+        assert_eq(err.strip, '')
+      end
       true
     end
 

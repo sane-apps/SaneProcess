@@ -9,7 +9,7 @@ GUARD = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/sane_layout
 require GUARD
 
 payload = begin
-  JSON.parse($stdin.read.to_s)
+  JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
 rescue JSON::ParserError
   {}
 end
@@ -18,7 +18,7 @@ tool = (payload['tool_name'] || payload['toolName'] || payload.dig('tool', 'name
 input = payload['tool_input'] || payload['input'] || payload['arguments'] || {}
 path = input['file_path'] || input['path'] || input['target_notebook'] || ''
 
-edit_like = tool.match?(/\A(?:Write|Edit|NotebookEdit|write|edit|StrReplace|WriteFile)\z/i) ||
+edit_like = tool.match?(/\A(?:Write|Edit|NotebookEdit|write|edit|StrReplace|WriteFile|search_replace)\z/i) ||
             path.to_s.strip != '' && tool.match?(/write|edit|replace/i)
 
 unless edit_like && !path.to_s.strip.empty?

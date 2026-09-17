@@ -7,8 +7,10 @@ require 'fileutils'
 require_relative 'core/gui_feedback'
 
 failures = 0
+$checks_run = 0
 
 def check(name, cond)
+  $checks_run += 1
   if cond
     warn "  PASS: #{name}"
     true
@@ -110,6 +112,8 @@ Dir.mktmpdir do |dir|
     SaneGuiFeedback.const_set(:CURSOR_STATE_PATH, original)
   end
 end
+
+warn "RESULTS: #{$checks_run - failures}/#{$checks_run} passed"
 
 if failures.zero?
   warn 'ALL PASS'

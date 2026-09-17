@@ -4,15 +4,10 @@ require 'json'
 require 'open3'
 require 'timeout'
 
-# Post-release Stop-hook step: keep the Mini's ~/Desktop/LemonSqueezy-Uploads
-# folder staged to ONLY the latest release ZIP per app.
-#
-# Lemon Squeezy's hosted file is the one release channel release.sh cannot
-# auto-deploy — the file is replaced by hand in the LS dashboard, and that
-# folder is the staging area. Codex or the owner drives the upload; Claude can
-# click through dashboards via Brave but cannot upload files through the
-# browser, so after a release Claude's post-flight runs this so the uploader
-# always finds exactly the right file with no stale versions beside it.
+# Post-release Stop-hook step: stage the requested release ZIP on the Mini.
+# The stager verifies SHA-256 and retains earlier local archives. Staging is
+# not upload proof; the existing Mini Brave dashboard lane verifies the hosted
+# replacement before removing superseded customer-visible files.
 #
 # Non-blocking: auto-stages on success (once per session), warns on failure with
 # the manual command. The heavy lifting lives in stage_lemonsqueezy_uploads.rb.

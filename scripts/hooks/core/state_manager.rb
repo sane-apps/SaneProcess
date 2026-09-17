@@ -224,7 +224,10 @@ module StateManager
       always_persist_required: false, # Tooling/durable-doc edits that must update handoff+memory even below threshold
       always_persist_files: [],   # Which tooling/durable-doc files triggered immediate persistence
       handoff_updated: false,     # SESSION_HANDOFF.md was edited this session
-      memory_updated: false       # Any memory file was edited this session
+      memory_updated: false,      # Any memory file was edited this session
+      last_significant_at: nil,   # Latest edit that created fresh persistence debt
+      handoff_updated_at: nil,    # Latest SESSION_HANDOFF.md checkpoint
+      memory_updated_at: nil      # Latest durable memory checkpoint
     },
     # === SKILL ENFORCEMENT ===
     # Tracks when skills should be used and validates they were executed properly
