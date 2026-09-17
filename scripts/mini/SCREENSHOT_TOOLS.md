@@ -15,10 +15,12 @@ Captures the URL on the Mini via Playwright with the Mini's Brave executable, co
 confirm the change renders, and set `inspected:true` (top-level + screenshot entry). The
 gate stays red until you inspect — intentional, do not fabricate.
 
-`--source-root` must name the exact Git root. The wrapper requires matching Air
-and Mini HEAD, branch, dirty status, and source/config manifest before and after
-capture. It records those values in the receipt and rejects source or output-path
-escape, source drift, and Air/Mini mismatch.
+`--source-root` must name the exact Git root. On the Mini, the wrapper executes
+locally and requires unchanged Mini HEAD, branch, dirty status and source/config
+manifest across capture. Its receipt states `capture_mode: mini-local` and
+`air_mini_parity: null` (not checked). When called from the Air, it keeps strict
+Air/Mini parity before and after capture and records `capture_mode: air-to-mini`.
+Both routes reject source/output-path escape and source drift.
 
 ## Website / URL screenshots → use Playwright with Brave on the Mini (preferred)
 
@@ -55,16 +57,102 @@ PNG** before writing `inspected: true` — do not fabricate a receipt.
 
 ## macOS app-window / desktop screenshots → `capture-mini-screenshot.sh`
 
-Use for the real SaneBar app UI (menu bar, Settings windows), not for URLs:
+Use for native app windows, Finder menus and the Mini desktop:
 
 ```bash
-scripts/mini/capture-mini-screenshot.sh --app "SaneBar" --window-name "Settings" --mode temp --copy-to <dir>
+scripts/mini/capture-mini-screenshot.sh desktop --app "SaneBar" --window-name "Settings" --mode temp --copy-to <dir>
 scripts/mini/capture-mini-screenshot.sh desktop --copy-to <dir>
 ```
 
-Caveats: it captures the Mini's live GUI session, so it **refuses** ("Mini visual
-workspace dirty") when Codex/Terminal is visible, and needs the target app focused with
-an inspectable window. Raw `screencapture` over ssh is blocked by `sane_bash_guards.rb`.
+Capture the target in a healthy, unobstructed state and inspect the saved image.
+Use `--skip-cleanup desktop` to preserve an open menu or a blocking dialog for
+private diagnosis. Desktop mode may include unrelated background windows; it does
+not prove that an obscured app is verified. Raw `screencapture` over SSH is blocked
+by `sane_bash_guards.rb`.
+
+Finder menu proof (Mini, verified 2026-09-07): Peekaboo 4.3.1 can omit visible
+context-menu items from its accessibility tree. Read a fresh canonical screenshot
+and use `click` or `move --global --foreground --no-auto-focus` at the observed
+coordinates. Automatic focus can dismiss the menu. The GUI runner now preserves
+an already-frontmost process and uses its existing AX focus helper for Finder;
+it must not send a redundant synchronous Finder activation while a menu is open.
+The former path captured successfully but waited until the 120-second timeout.
+Verify every action with another screenshot and its actual result.
+
+SwiftUI sheet proof (Mini, Peekaboo 4.3.1, verified 2026-09-07):
+an exact parent-window `see --window-id ID --tree --no-screenshot` includes
+sheet controls. AX button clicks work from that snapshot. Background keystrokes
+cannot target the parent when the sheet holds keyboard focus; foreground focus
+of the parent may time out. For an editable sheet field, use
+`set-value 'text' --snapshot SNAPSHOT --on ELEMENT`; this command rejects
+combining a snapshot with window/app/PID flags. Re-read the field and actual
+filtered rows after setting it. Background AX scrolling is not supported on
+SaneClick's library sheet; foreground scrolling remains unverified. Do not
+repeat focus failures or count event dispatch alone as a passed action.
+
+Settings scrollbar follow-up (2026-09-07): AX scrollbar set-value changed SaneClick's scroll position but Peekaboo returned an indeterminate receipt-envelope error. Do not repeat it: re-read the scrollbar value and capture the resulting viewport. A Finder WINDOW_NOT_FOUND foreground error also coincided with a visible macOS ruby permission prompt; inspect the desktop before assuming a targeting defect.
+
+Native scrollbar page buttons (2026-09-07): on SaneClick Settings, click the fresh AX increment-page button using its exact window/snapshot/element. Read-back showed scrollbar1 and a clean screenshot confirmed the complete section. Prefer this native action over scrollbar set-value, which returned an indeterminate bridge receipt despite changing the value.
+
+Peekaboo 4.3.3 command map (Mini, verified 2026-09-08):
+`peekaboo image` and `peekaboo list` were removed in v4. Use these instead:
+
+| Old (removed) | Working 4.3.3 command |
+|---------------|------------------------|
+| `peekaboo image --mode screen --path FILE` | `peekaboo see --mode screen --no-elements --path FILE` |
+| `peekaboo image --app menubar --path FILE` | `peekaboo see --app menubar --no-elements --path FILE` |
+| `peekaboo list apps` | `peekaboo app list` |
+| `peekaboo list windows --app NAME` | `peekaboo window list --app NAME` |
+| `peekaboo list menubar` | `peekaboo menubar list` |
+
+Raw ssh `peekaboo see/image/capture/list` is blocked. Run Peekaboo inside `mini-gui-run.sh`. Visual smoke hides the `SaneApps Automation:` Terminal runner window and does not count it as a dirty desktop.
+
+SaneClip history popover and NSMenu (Mini, Peekaboo 4.3.3, verified 2026-09-08):
+`peekaboo see --app SaneClip` / `--pid` keeps **layer 0** windows only. The
+history NSPopover is **layer 25** (about 346×526). Context menus and the AI
+submenu are **layer 101**. Combined `see --app` then reports a 64×64
+minimized window and is the wrong observation tool.
+
+Working capture (must run inside `mini-gui-run.sh`; raw ssh Peekaboo see/click
+is the wrong TCC identity):
+
+```bash
+# Window ids: /usr/bin/python3 + Quartz CGWindowListCopyWindowInfo.
+# Homebrew python3 has no Quartz.
+peekaboo see --window-id ID --no-elements --json --path /tmp/clip.png --no-remote
+```
+
+That returns a PNG plus `snapshot_id`. Coordinate space is
+`global_display_points` (scale 1 on the Mini). Inspect the PNG before clicking.
+
+NSMenu snapshot clicks fail immediately (`SNAPSHOT_STALE`, "no longer
+interactive"), even when `see` and `click --snapshot` run in the same
+process. Do not retry snapshot clicks on layer 101 menus. `--no-auto-focus`
+without `--foreground` is `VALIDATION_ERROR`.
+
+Working click, after measuring pixels against the window origin:
+
+```bash
+peekaboo click --at X,Y --global --foreground --no-auto-focus --json --no-remote
+```
+
+Status-item open: `peekaboo menubar list` / `menubar click --index/--title --foreground --verify`.
+An extra status-item click toggles history closed. An extra right-click
+dismisses the open menu. Do not type into history search without a pixel
+proof of rows; a poisoned search shows "No Results" while the footer still
+says "50 items" — relaunch to clear `@State`, do not guess backspace clicks.
+
+AI vs Transform: the 5th context-menu row is `AI — On Device (macOS 26+)`.
+The 6th is `Paste As...`, which opens Transform (UPPERCASE / Trimmed), not
+Rewrite. Photograph the submenu. Rewrite is the first row of the small
+~142×82 AI menu. The Rewrite sheet is 520×420; Copy is bottom-right after a
+result, Cancel is bottom-left. `copyTextWithoutPaste` must not add a history
+row. Never `pbcopy`/`pbpaste` for this proof — Universal Clipboard injects
+into the other machine's Clip history. Store pasteboard hashes only.
+
+Clip's live receipt is `outputs/customer-ui/ai-proof/runtime-traversal.json`
+(booleans + hashes, no prompt/result/pasteboard text). Details also live in
+`apps/SaneClip/DEVELOPMENT.md`.
 
 ## Tool inventory (2026-06-30)
 
@@ -73,5 +161,6 @@ an inspectable window. Raw `screencapture` over ssh is blocked by `sane_bash_gua
 | Mini | ✅ Node package | ✅ | ❌ | Use the wrapper's explicit Brave executable for URL receipts |
 | Air  | ❌ (browser cache only) | ✅ | ✅ | Air is the owner's workstation — don't capture here except notch verification |
 
-`mini-gui-run.sh` was observed running in a context that could not access
-`/Users/stephansmac/` — treat as unreliable for scripted screenshots; prefer Playwright.
+The June inventory above is historical. Native desktop/menu capture was verified
+on the Mini on 2026-09-07 through `mini-gui-run.sh`; use the native capture wrapper
+for that work. Playwright remains the separate website capture path.

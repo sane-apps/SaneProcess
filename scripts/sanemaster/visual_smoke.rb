@@ -237,26 +237,26 @@ module SaneMasterModules
       commands = [
         visual_smoke_json_command('permissions', smoke_dir, [options.peekaboo_bin, 'permissions', 'status', '--json'])
       ]
-      commands << visual_smoke_json_command('apps', smoke_dir, [options.peekaboo_bin, 'list', 'apps', '--json']) if capture_app
-      commands << visual_smoke_json_command('menubar-list', smoke_dir, [options.peekaboo_bin, 'list', 'menubar', '--json'])
+      commands << visual_smoke_json_command('apps', smoke_dir, [options.peekaboo_bin, 'app', 'list', '--json']) if capture_app
+      commands << visual_smoke_json_command('menubar-list', smoke_dir, [options.peekaboo_bin, 'menubar', 'list', '--json'])
       if capture_app
         commands.insert(
           2,
-          visual_smoke_json_command('windows', smoke_dir, [options.peekaboo_bin, 'list', 'windows', '--app', options.app_name, '--json'])
+          visual_smoke_json_command('windows', smoke_dir, [options.peekaboo_bin, 'window', 'list', '--app', options.app_name, '--json'])
         )
       end
       if options.capture_screen
         commands << visual_smoke_artifact_command(
           'screen-image',
           File.join(smoke_dir, 'screen.png'),
-          [options.peekaboo_bin, 'image', '--mode', 'screen', '--retina', '--path', File.join(smoke_dir, 'screen.png')]
+          [options.peekaboo_bin, 'see', '--mode', 'screen', '--retina', '--no-elements', '--path', File.join(smoke_dir, 'screen.png')]
         )
       end
       if options.capture_menu
         commands << visual_smoke_artifact_command(
           'menu-image',
           File.join(smoke_dir, 'menu.png'),
-          [options.peekaboo_bin, 'image', '--app', 'menubar', '--retina', '--path', File.join(smoke_dir, 'menu.png'), '--json']
+          [options.peekaboo_bin, 'see', '--app', 'menubar', '--retina', '--no-elements', '--path', File.join(smoke_dir, 'menu.png'), '--json']
         )
       end
       if capture_app
@@ -497,7 +497,7 @@ module SaneMasterModules
 
       issues = []
       if visual_smoke_mini_host?
-        visual_smoke_close_terminal_host
+        visual_smoke_hide_terminal
         sleep 0.5
       end
       prompt_hits = visual_smoke_permission_prompt_hits(options.app_name)
@@ -521,7 +521,15 @@ module SaneMasterModules
         tell application "System Events"
           if exists process "Terminal" then
             tell process "Terminal"
-              return count of windows
+              if visible is false then return 0
+              set n to 0
+              repeat with w in windows
+                set wn to name of w as text
+                if wn does not start with "SaneApps Automation:" then
+                  set n to n + 1
+                end if
+              end repeat
+              return n
             end tell
           end if
         end tell

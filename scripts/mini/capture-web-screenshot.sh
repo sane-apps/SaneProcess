@@ -9,7 +9,7 @@
 # The tools are here. Use them.
 #
 # Usage:
-#   capture-web-screenshot.sh <url> <output_dir> --source-root PROJECT_ROOT [--viewport desktop|375] [--label NAME] [--app APP] [--version VER]
+#   capture-web-screenshot.sh <url> <output_dir> --source-root PROJECT_ROOT [--viewport desktop|375] [--reduced-motion reduce|no-preference] [--label NAME] [--app APP] [--version VER]
 #
 # Example:
 #   capture-web-screenshot.sh https://sanebar.com apps/SaneBar/outputs/visual-audit-2188 \
@@ -29,16 +29,29 @@ source_snapshot() {
     branch = `git -C #{Shellwords.escape(root.to_s)} branch --show-current`.strip
     status = IO.popen(["git", "-C", root.to_s, "status", "--porcelain=v1", "-z"], &:read)
     paths = IO.popen(["git", "-C", root.to_s, "ls-files", "-co", "--exclude-standard", "-z"], &:read).split("\0").reject(&:empty?).sort
+    shared_config_links = []
     records = paths.map do |relative|
       candidate = root.join(relative)
       abort "ERROR: source path escapes target root: #{relative}" if Pathname.new(relative).absolute? || relative.split("/").include?("..")
-      abort "ERROR: source path is not a regular file: #{relative}" if candidate.symlink? || !candidate.file?
+      link_text = candidate.symlink? ? candidate.readlink.to_s : nil
+      canonical_link = "../../infra/SaneProcess/templates/lefthook.yml"
+      expected_config = root.parent.parent.join("infra/SaneProcess/templates/lefthook.yml")
+      allowed_shared_link = relative == "lefthook.yml" && link_text == canonical_link &&
+        root.parent.basename.to_s == "apps" && root.parent.parent.basename.to_s == "SaneApps" &&
+        expected_config.file? && !expected_config.symlink? && expected_config.realpath == expected_config.cleanpath &&
+        candidate.realpath == expected_config
+      abort "ERROR: source path is not a regular file: #{relative}" if !candidate.file? || (link_text && !allowed_shared_link)
       resolved = candidate.realpath
-      abort "ERROR: source path escapes target root: #{relative}" unless resolved.to_s.start_with?(root.to_s + File::SEPARATOR)
+      abort "ERROR: source path escapes target root: #{relative}" unless allowed_shared_link || resolved.to_s.start_with?(root.to_s + File::SEPARATOR)
       bytes = File.binread(resolved)
-      "#{Digest::SHA256.hexdigest(bytes)}\t#{bytes.bytesize}\t#{relative}\n"
+      digest = Digest::SHA256.hexdigest(bytes)
+      if allowed_shared_link
+        shared_config_links << {path: relative, link_target: link_text, content_sha256: digest}
+      end
+      suffix = allowed_shared_link ? "\tlink:#{link_text}" : ""
+      "#{digest}\t#{bytes.bytesize}\t#{relative}#{suffix}\n"
     end.join
-    puts JSON.generate({root: root.to_s, head: head, branch: branch, dirty: !status.empty?, status_sha256: Digest::SHA256.hexdigest(status), file_count: paths.length, manifest_sha256: Digest::SHA256.hexdigest(records)})
+    puts JSON.generate({root: root.to_s, head: head, branch: branch, dirty: !status.empty?, status_sha256: Digest::SHA256.hexdigest(status), file_count: paths.length, manifest_sha256: Digest::SHA256.hexdigest(records), shared_config_links: shared_config_links})
   ' "$1" 2>&1
 }
 
@@ -69,20 +82,39 @@ shell_quote() {
 }
 
 MINI_HOST="${MINI_HOST:-stephans-mac-mini.local}"
+MINI_LOCAL=false
+CAPTURE_MODE="air-to-mini"
+case "$(hostname 2>/dev/null)" in
+  Stephans-Mac-mini.local|stephans-mac-mini.local|Stephans-Mac-mini|stephans-mac-mini)
+    MINI_LOCAL=true
+    CAPTURE_MODE="mini-local"
+    MINI_HOST="$(hostname)"
+    ;;
+esac
+
+run_on_mini() {
+  if $MINI_LOCAL; then
+    bash -c "$1"
+  else
+    ssh "$MINI_HOST" "$1"
+  fi
+}
+
 URL="${1:-}"
 OUT_DIR="${2:-}"
 if [ -z "$URL" ] || [ -z "$OUT_DIR" ]; then
-  echo "usage: capture-web-screenshot.sh <url> <output_dir> --source-root PROJECT_ROOT [--viewport desktop|375] [--label NAME] [--app APP] [--version VER]" >&2
+  echo "usage: capture-web-screenshot.sh <url> <output_dir> --source-root PROJECT_ROOT [--viewport desktop|375] [--reduced-motion reduce|no-preference] [--label NAME] [--app APP] [--version VER]" >&2
   exit 2
 fi
 shift 2
-LABEL="web"; APP="unknown"; VER="unknown"; VIEWPORT_LABEL="desktop"; DRY_RUN=false; SOURCE_ROOT=""; REMOTE_SOURCE_ROOT=""
+LABEL="web"; APP="unknown"; VER="unknown"; VIEWPORT_LABEL="desktop"; REDUCED_MOTION="no-preference"; DRY_RUN=false; SOURCE_ROOT=""; REMOTE_SOURCE_ROOT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --label) LABEL="$2"; shift 2;;
     --app) APP="$2"; shift 2;;
     --version) VER="$2"; shift 2;;
     --viewport) VIEWPORT_LABEL="$2"; shift 2;;
+    --reduced-motion) REDUCED_MOTION="$2"; shift 2;;
     --source-root) SOURCE_ROOT="$2"; shift 2;;
     --remote-source-root) REMOTE_SOURCE_ROOT="$2"; shift 2;;
     --dry-run) DRY_RUN=true; shift;;
@@ -114,12 +146,24 @@ case "$VIEWPORT_LABEL" in
   *) echo "unsupported viewport: $VIEWPORT_LABEL (expected desktop or 375)" >&2; exit 2;;
 esac
 
+case "$REDUCED_MOTION" in
+  reduce|no-preference) ;;
+  *) echo "unsupported reduced motion: $REDUCED_MOTION" >&2; exit 2;;
+esac
+
 if $DRY_RUN; then
-  printf '{"browser":"Brave","viewport_label":"%s","width":%s,"height":%s}\n' \
-    "$VIEWPORT_LABEL" "$VIEWPORT_WIDTH" "$VIEWPORT_HEIGHT"
+  printf '{"browser":"Brave","viewport_label":"%s","width":%s,"height":%s,"reduced_motion":"%s"}\n' \
+    "$VIEWPORT_LABEL" "$VIEWPORT_WIDTH" "$VIEWPORT_HEIGHT" "$REDUCED_MOTION"
   exit 0
 fi
 
+if $MINI_LOCAL; then
+  [ -z "$REMOTE_SOURCE_ROOT" ] || [ "$REMOTE_SOURCE_ROOT" = "$SOURCE_ROOT" ] || {
+    echo "ERROR: Mini-local capture cannot target a different remote source root" >&2; exit 2;
+  }
+  REMOTE_SOURCE_ROOT="$SOURCE_ROOT"
+  REMOTE_SOURCE_PRE="$LOCAL_SOURCE_PRE"
+else
 if [ -z "$REMOTE_SOURCE_ROOT" ]; then
   case "$SOURCE_ROOT" in
     */SaneApps/*) REMOTE_SOURCE_ROOT="__MINI_HOME__/SaneApps/${SOURCE_ROOT#*/SaneApps/}";;
@@ -142,6 +186,8 @@ if ! source_identity_equal "$LOCAL_SOURCE_PRE" "$REMOTE_SOURCE_PRE"; then
   exit 5
 fi
 
+fi
+
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 PNG_NAME="${APP}-${LABEL}-${VIEWPORT_LABEL}-mini-${STAMP}.png"
 REMOTE_PNG="/tmp/${PNG_NAME}"
@@ -156,7 +202,7 @@ BRAVE_EXECUTABLE="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 PLAYWRIGHT_NODE_PATH="/opt/homebrew/lib/node_modules"
 remote_brave="$(shell_quote "$BRAVE_EXECUTABLE")"
 echo "→ Checking Playwright and Brave on ${MINI_HOST}..."
-if ! ssh "$MINI_HOST" "test -x ${remote_brave} && NODE_PATH=${PLAYWRIGHT_NODE_PATH} node -e \"require('playwright')\""; then
+if ! run_on_mini "test -x ${remote_brave} && NODE_PATH=${PLAYWRIGHT_NODE_PATH} node -e \"require('playwright')\""; then
   echo "ERROR: Mini Brave or the Playwright Node package is unavailable." >&2
   exit 3
 fi
@@ -164,10 +210,10 @@ fi
 echo "→ Capturing ${URL} (${VIEWPORT_LABEL} ${VIEWPORT_WIDTH}x${VIEWPORT_HEIGHT}, full page, headless Brave)..."
 remote_url="$(shell_quote "$URL")"
 remote_png="$(shell_quote "$REMOTE_PNG")"
-if ! ssh "$MINI_HOST" \
-  "NODE_PATH=${PLAYWRIGHT_NODE_PATH} node - ${remote_url} ${remote_png} ${VIEWPORT_WIDTH} ${VIEWPORT_HEIGHT}" <<'NODE'
+if ! run_on_mini \
+  "NODE_PATH=${PLAYWRIGHT_NODE_PATH} node - ${remote_url} ${remote_png} ${VIEWPORT_WIDTH} ${VIEWPORT_HEIGHT} ${REDUCED_MOTION}" <<'NODE'
 const { chromium } = require("playwright");
-const [url, outputPath, widthText, heightText] = process.argv.slice(2);
+const [url, outputPath, widthText, heightText, reducedMotion] = process.argv.slice(2);
 (async () => {
   const browser = await chromium.launch({
     executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
@@ -175,7 +221,8 @@ const [url, outputPath, widthText, heightText] = process.argv.slice(2);
   });
   try {
     const page = await browser.newPage({
-      viewport: { width: Number(widthText), height: Number(heightText) }
+      viewport: { width: Number(widthText), height: Number(heightText) },
+      reducedMotion
     });
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(4000);
@@ -215,22 +262,31 @@ fi
 
 
 LOCAL_SOURCE_POST="$(source_snapshot "$SOURCE_ROOT")" || { printf "%s\n" "$LOCAL_SOURCE_POST" >&2; exit 5; }
+if $MINI_LOCAL; then
+  REMOTE_SOURCE_POST="$LOCAL_SOURCE_POST"
+else
 REMOTE_SOURCE_POST="$(ssh "$MINI_HOST" "bash -s -- --source-snapshot ${remote_source_root}" < "$0")" || {
   printf "%s\n" "$REMOTE_SOURCE_POST" >&2
-  ssh "$MINI_HOST" "rm -f ${remote_png}" >/dev/null 2>&1 || true
+  run_on_mini "rm -f ${remote_png}" >/dev/null 2>&1 || true
   exit 5
 }
+fi
+
 if ! source_identity_equal "$LOCAL_SOURCE_PRE" "$LOCAL_SOURCE_POST" || \
    ! source_identity_equal "$REMOTE_SOURCE_PRE" "$REMOTE_SOURCE_POST" || \
    ! source_identity_equal "$LOCAL_SOURCE_POST" "$REMOTE_SOURCE_POST"; then
-  ssh "$MINI_HOST" "rm -f ${remote_png}" >/dev/null 2>&1 || true
+  run_on_mini "rm -f ${remote_png}" >/dev/null 2>&1 || true
   echo "ERROR: website source/config changed during capture" >&2
   exit 5
 fi
 
 echo "→ Copying screenshot back to ${OUT_DIR}/${PNG_NAME}..."
-scp "${MINI_HOST}:${REMOTE_PNG}" "${OUT_DIR}/${PNG_NAME}"
-ssh "$MINI_HOST" "rm -f ${remote_png}" >/dev/null 2>&1 || true
+if $MINI_LOCAL; then
+  mv "$REMOTE_PNG" "${OUT_DIR}/${PNG_NAME}" || exit 4
+else
+  scp "${MINI_HOST}:${REMOTE_PNG}" "${OUT_DIR}/${PNG_NAME}" || exit 4
+fi
+run_on_mini "rm -f ${remote_png}" >/dev/null 2>&1 || true
 PNG_SHA256="$(shasum -a 256 "${OUT_DIR}/${PNG_NAME}" | awk '{print $1}')"
 PNG_BYTES="$(wc -c < "${OUT_DIR}/${PNG_NAME}" | tr -d ' ')"
 
@@ -241,21 +297,23 @@ ruby -rjson -e '
   receipt = {
     type: "visual_audit", status: "passed", host: ARGV.fetch(1), inspected: false,
     app: ARGV.fetch(2), app_version: ARGV.fetch(3), commit: source.fetch("head"),
-    generated_at: ARGV.fetch(4),
+    generated_at: ARGV.fetch(4), capture_mode: ARGV.fetch(13),
     captured_with: "Playwright headless Brave on the Mini (capture-web-screenshot.sh)",
-    url: ARGV.fetch(5),
+    url: ARGV.fetch(5), reduced_motion: ARGV.fetch(14),
     viewport: {label: ARGV.fetch(6), width: Integer(ARGV.fetch(7)), height: Integer(ARGV.fetch(8))},
     source: {
       target_root: source.fetch("root"), remote_root: ARGV.fetch(9),
       git_head: source.fetch("head"), git_branch: source.fetch("branch"), git_dirty: source.fetch("dirty"),
       git_status_sha256: source.fetch("status_sha256"), manifest_file_count: source.fetch("file_count"),
-      manifest_sha256: source.fetch("manifest_sha256"), air_mini_parity: true
+      manifest_sha256: source.fetch("manifest_sha256"), source_unchanged_during_capture: true,
+      shared_config_links: source.fetch("shared_config_links", []),
+      air_mini_parity: ARGV.fetch(13) == "air-to-mini" ? true : nil
     },
-    screenshots: [{path: ARGV.fetch(10), sha256: ARGV.fetch(11), bytes: Integer(ARGV.fetch(12)), view: "#{ARGV.fetch(5)} full page at #{ARGV.fetch(6)} #{ARGV.fetch(7)}x#{ARGV.fetch(8)}", result: "TODO: describe what you SEE rendering correctly", inspected: false}],
+    screenshots: [{path: ARGV.fetch(10), sha256: ARGV.fetch(11), bytes: Integer(ARGV.fetch(12)), view: "#{ARGV.fetch(5)} full page at #{ARGV.fetch(6)} #{ARGV.fetch(7)}x#{ARGV.fetch(8)}, reduced motion #{ARGV.fetch(14)}", result: "TODO: describe what you SEE rendering correctly", inspected: false}],
     notes: "Scaffold from capture-web-screenshot.sh. OPEN the PNG, confirm the change renders, then set inspected:true (top-level + screenshot) and fill in result. Do NOT fabricate."
   }
   puts JSON.pretty_generate(receipt)
-' "$LOCAL_SOURCE_POST" "$MINI_HOST" "$APP" "$VER" "$NOW_ISO" "$URL" "$VIEWPORT_LABEL" "$VIEWPORT_WIDTH" "$VIEWPORT_HEIGHT" "$REMOTE_SOURCE_ROOT" "$PNG_NAME" "$PNG_SHA256" "$PNG_BYTES" > "$RECEIPT"
+' "$LOCAL_SOURCE_POST" "$MINI_HOST" "$APP" "$VER" "$NOW_ISO" "$URL" "$VIEWPORT_LABEL" "$VIEWPORT_WIDTH" "$VIEWPORT_HEIGHT" "$REMOTE_SOURCE_ROOT" "$PNG_NAME" "$PNG_SHA256" "$PNG_BYTES" "$CAPTURE_MODE" "$REDUCED_MOTION" > "$RECEIPT"
 
 echo ""
 echo "✅ Screenshot: ${OUT_DIR}/${PNG_NAME}"

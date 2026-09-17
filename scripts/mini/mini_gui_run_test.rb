@@ -3,6 +3,7 @@
 
 require_relative '../hooks/test/test_framework'
 require 'json'
+require 'digest'
 require 'open3'
 require 'tmpdir'
 
@@ -292,7 +293,7 @@ exit(run_tests('Mini GUI Runner Tests') do
 
     test('visual guard accepts Peekaboo-visible floating panels when System Events reports zero windows') do
       assert_includes(visual_guard_source, 'target_peekaboo_window_count()')
-      assert_includes(visual_guard_source, 'peekaboo list windows --app "$TARGET_APP" --json')
+      assert_includes(visual_guard_source, 'peekaboo window list --app "$TARGET_APP" --json')
       assert_includes(visual_guard_source, 'if ! $DESKTOP_MODE && [ "$target_windows" = "0" ]')
       assert_includes(visual_guard_source, 'target_windows="$peekaboo_target_windows"')
       true
@@ -418,7 +419,8 @@ exit(run_tests('Mini GUI Runner Tests') do
     test('AppleScript hands focus back to Finder after launching the hidden Terminal window') do
       assert_includes(apple_script_source, 'launch')
       assert_includes(apple_script_source, 'delay 0.5')
-      assert_includes(apple_script_source, 'tell application "Finder" to activate')
+      assert_includes(apple_script_source, 'my restoreBundleID("com.apple.finder")')
+      assert_includes(apple_script_source, 'if frontmost of candidateProcess then return true')
       assert(!apple_script_source.include?('repeat with w in windows'),
              'mini-gui-run.applescript should not carry its own legacy window-sweep loop')
       true
@@ -464,10 +466,117 @@ exit(run_tests('Mini GUI Runner Tests') do
         assert_includes(desktop_out, '"browser":"Brave"')
         assert_includes(desktop_out, '"viewport_label":"desktop","width":1440,"height":1000')
         assert_includes(mobile_out, '"viewport_label":"375","width":375,"height":900')
+        reduce_out, reduce_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, 'https://example.com', File.join(root, 'outputs', 'reduce'), '--source-root', root, '--reduced-motion', 'reduce', '--dry-run')
+        assert(reduce_status.success?, reduce_out)
+        assert_eq(JSON.parse(reduce_out)['reduced_motion'], 'reduce')
+        assert_eq(JSON.parse(desktop_out)['reduced_motion'], 'no-preference')
+        bad_motion, bad_motion_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, 'https://example.com', File.join(root, 'outputs', 'invalid-motion'), '--source-root', root, '--reduced-motion', 'invalid', '--dry-run')
+        assert(!bad_motion_status.success?, 'invalid reduced-motion choice must fail')
+        assert_includes(bad_motion, 'unsupported reduced motion')
         File.symlink('/etc/hosts', File.join(root, 'escape'))
         escape_out, escape_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, '--source-snapshot', root)
         assert(!escape_status.success?, escape_out)
         assert_includes(escape_out, 'source path is not a regular file: escape')
+      end
+      true
+    end
+
+    test('only canonical shared lefthook link is allowed and its contents are fingerprinted') do
+      Dir.mktmpdir('web-shared-config') do |dir|
+        root = File.join(dir, 'SaneApps/apps/Fixture')
+        shared = File.join(dir, 'SaneApps/infra/SaneProcess/templates/lefthook.yml')
+        FileUtils.mkdir_p([root, File.dirname(shared)])
+        File.write(shared, "pre-commit: original\n")
+        link = File.join(root, 'lefthook.yml')
+        File.symlink('../../infra/SaneProcess/templates/lefthook.yml', link)
+        [%w[init -q], %w[config user.email test@example.com], %w[config user.name Test], %w[add .], %w[commit -qm initial]].each do |args|
+          output, status = Open3.capture2e('git', '-C', root, *args)
+          assert(status.success?, output)
+        end
+        before_out, before_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, '--source-snapshot', root)
+        assert(before_status.success?, before_out)
+        before = JSON.parse(before_out)
+        entry = before.fetch('shared_config_links').first
+        assert_eq(entry['path'], 'lefthook.yml')
+        assert_eq(entry['link_target'], '../../infra/SaneProcess/templates/lefthook.yml')
+        assert_eq(entry['content_sha256'], Digest::SHA256.file(shared).hexdigest)
+        File.write(shared, "pre-commit: changed\n")
+        after_out, after_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, '--source-snapshot', root)
+        assert(after_status.success?, after_out)
+        after = JSON.parse(after_out)
+        assert(before['manifest_sha256'] != after['manifest_sha256'], 'external config changes must alter source identity')
+        assert_eq(before['status_sha256'], after['status_sha256'])
+
+        File.unlink(link)
+        File.symlink('/etc/hosts', link)
+        rejected, status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, '--source-snapshot', root)
+        assert(!status.success?, 'arbitrary external lefthook targets must fail')
+        assert_includes(rejected, 'source path is not a regular file: lefthook.yml')
+        File.unlink(link)
+        File.symlink(shared, link)
+        _, absolute_status = Open3.capture2e(WEB_SCREENSHOT_WRAPPER_PATH, '--source-snapshot', root)
+        assert(!absolute_status.success?, 'only the canonical portable link spelling is supported')
+      end
+      true
+    end
+
+    test('Mini-local capture avoids SSH, binds stable source, and makes no Air parity claim') do
+      Dir.mktmpdir('web-capture-routing') do |dir|
+        root = File.join(dir, 'source')
+        stubs = File.join(dir, 'bin')
+        FileUtils.mkdir_p([root, stubs])
+        File.write(File.join(root, '.gitignore'), "outputs/\n")
+        File.write(File.join(root, 'index.html'), "stable\n")
+        [%w[init -q], %w[config user.email test@example.com], %w[config user.name Test], %w[add .], %w[commit -qm initial]].each do |args|
+          output, status = Open3.capture2e('git', '-C', root, *args)
+          assert(status.success?, output)
+        end
+        File.write(File.join(stubs, 'hostname'), "#!/bin/bash\necho Stephans-Mac-mini.local\n")
+        File.write(File.join(stubs, 'ssh'), "#!/bin/bash\necho unexpected-ssh >&2\nexit 91\n")
+        File.write(File.join(stubs, 'node'), <<~'SH')
+          #!/bin/bash
+          if [ "$1" = "-e" ]; then exit 0; fi
+          cat >/dev/null
+          [ -z "$FIXTURE_MOTION" ] || printf %s "$6" > "$FIXTURE_MOTION"
+          printf fixture-image-bytes > "$3"
+          if [ -n "$FIXTURE_CHANGE_SOURCE" ]; then
+            printf changed > "$FIXTURE_CHANGE_SOURCE"
+          fi
+        SH
+        %w[hostname ssh node].each { |name| File.chmod(0o755, File.join(stubs, name)) }
+        env = {'PATH' => "#{stubs}:#{ENV.fetch('PATH')}"}
+        out = File.join(root, 'outputs', 'stable')
+        command = [WEB_SCREENSHOT_WRAPPER_PATH, 'https://example.com', out, '--source-root', root]
+        output, status = Open3.capture2e(env, *command)
+        assert(status.success?, output)
+        receipt = JSON.parse(File.read(File.join(out, 'customer_ui_action_receipt.json')))
+        assert_eq(receipt['capture_mode'], 'mini-local')
+        assert_eq(receipt['source']['air_mini_parity'], nil)
+        assert_eq(receipt['source']['source_unchanged_during_capture'], true)
+        assert_eq(receipt['source']['target_root'], File.realpath(root))
+        assert_eq(receipt['inspected'], false)
+        assert_eq(receipt['screenshots'].first['inspected'], false)
+        assert_eq(receipt['screenshots'].first['bytes'], 'fixture-image-bytes'.bytesize)
+
+        assert_eq(receipt['reduced_motion'], 'no-preference')
+        motion_file = File.join(dir, 'motion')
+        reduced_output, reduced_status = Open3.capture2e(env.merge('FIXTURE_MOTION' => motion_file), *command, '--reduced-motion', 'reduce')
+        assert(reduced_status.success?, reduced_output)
+        assert_eq(File.read(motion_file), 'reduce')
+        reduced_receipt = JSON.parse(File.read(File.join(out, 'customer_ui_action_receipt.json')))
+        assert_eq(reduced_receipt['reduced_motion'], 'reduce')
+        assert_eq(reduced_receipt['inspected'], false)
+        changed_out = File.join(root, 'outputs', 'changed')
+        changed, changed_status = Open3.capture2e(env.merge('FIXTURE_CHANGE_SOURCE' => File.join(root, 'index.html')),
+                                                 WEB_SCREENSHOT_WRAPPER_PATH, 'https://example.com', changed_out, '--source-root', root)
+        assert(!changed_status.success?, 'source changes during capture must fail')
+        assert_includes(changed, 'website source/config changed during capture')
+        assert(!File.exist?(File.join(changed_out, 'customer_ui_action_receipt.json')), 'changed source cannot emit a receipt')
+
+        File.write(File.join(stubs, 'hostname'), "#!/bin/bash\necho Stephans-MacBook-Air.local\n")
+        air_output, air_status = Open3.capture2e(env, *command, '--remote-source-root', root)
+        assert(!air_status.success?, 'Air must use the SSH parity lane, never local browser execution')
+        assert_includes(air_output, 'unexpected-ssh')
       end
       true
     end

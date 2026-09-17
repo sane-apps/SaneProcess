@@ -4,6 +4,7 @@ on restoreBundleID(bundleID)
       repeat with candidateProcess in application processes
         try
           if bundle identifier of candidateProcess is bundleID then
+            if frontmost of candidateProcess then return true
             set frontmost of candidateProcess to true
             return true
           end if
@@ -82,7 +83,7 @@ on run argv
     else if focusMode is "restore-frontmost" and priorBundleID is not "" and priorBundleID is not "com.apple.Terminal" then
       my restoreBundleID(priorBundleID)
     else
-      tell application "Finder" to activate
+      my restoreBundleID("com.apple.finder")
     end if
   end try
 
