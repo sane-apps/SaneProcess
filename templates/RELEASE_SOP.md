@@ -254,6 +254,40 @@ Run this wrapper from the controlling machine with Codex installed. It copies th
 Hard rule:
 - Do not claim a user-facing fix is visually verified unless you have a saved screenshot/render from the Mini path or the deterministic render lane.
 
+### Lemon Squeezy hosted-file handoff
+
+Run the existing read-only inventory on the Mini:
+`SANE_NO_KEYCHAIN=1 SANE_ENV_CACHE_WRITE=0 ruby scripts/SaneMaster.rb hosted_file_actions --json`.
+Use its product ID, variant ID and dashboard URL; an API error, missing app row,
+ambiguous variant or empty action list does not prove an update. `In sync` means
+published filename/version metadata matches the appcast, not byte or runtime proof.
+If hosted files are newer than the feed, reconcile release evidence before changing
+anything. A disabled new-purchase checkout does not remove existing buyers' access.
+
+1. Finish the app's release/runtime gates and identify the approved signed archive,
+   version, SHA-256 and compatibility requirements. Stage that exact version with
+   `ruby scripts/stage_lemonsqueezy_uploads.rb --project <app-dir> --version X.Y.Z`.
+   The stager verifies local SHA-256 and retains earlier archives; it does not publish.
+2. Reuse the signed-in Mini Brave product editor, check the product and variant,
+   then upload the approved archive through Files. Re-read after each action and
+   confirm the replacement is published before proceeding.
+3. Re-read the file API and verify the customer download's bytes/version/signing
+   against the approved archive. A successful upload click or matching filename
+   alone is insufficient. File download URLs are short-lived; do not publish them.
+4. Only after replacement proof, delete the superseded customer-visible hosted
+   files. Keep only the newest ZIP listed. Unpublishing is not enough; a leftover
+   old ZIP still listed means the hosted-file step is not done. Preserve private
+   rollback copies and archives still needed for supported OS compatibility.
+   Re-read the final variant file list and customer download surface; save the
+   file IDs, version and verification receipts.
+
+Official sources checked 2026-09-06: [file object](https://docs.lemonsqueezy.com/api/files/the-file-object),
+[list files](https://docs.lemonsqueezy.com/api/files/list-all-files),
+[product file editing](https://docs.lemonsqueezy.com/help/products/adding-products),
+[existing customer access](https://docs.lemonsqueezy.com/help/online-store/my-orders).
+The documented Files API supports read/list; use the existing dashboard for upload
+and deletion, not guessed private API endpoints.
+
 ### 0c. Setapp Lane Prep
 
 Treat Setapp as a separate channel, not as a direct-build shortcut.

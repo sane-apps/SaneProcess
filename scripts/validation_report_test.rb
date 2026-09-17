@@ -133,6 +133,9 @@ class WebsiteDistributionHarness < ValidationReport
     { products: {}, bundles: @bundles, store_base: @store_base, checkout_base: @checkout_base, redirect_base: @redirect_base, all_domains: [] }
   end
 
+  def validate_q7_checkout_worker_sync(_config, _issues)
+  end
+
   def product_checkout_url(product, checkout_base = @checkout_base)
     explicit_url = (product[:checkout_url] || product['checkout_url']).to_s
     return explicit_url unless explicit_url.empty?
@@ -550,7 +553,7 @@ exit(run_tests('Validation report tests') do
       true
     end
 
-    test('requires supersession metadata and one Codex correction note') do
+    test('requires supersession metadata for present history without requiring retired client notes') do
       Dir.mktmpdir('clean-session-metadata') do |root|
         sources, _note = clean_session_fixture(root)
         File.write(sources['claude-inbox-automation'], "Current automation without history status.\n")
@@ -558,7 +561,80 @@ exit(run_tests('Validation report tests') do
         issues = []
         subject.send(:check_clean_session_truth, issues)
         assert(issues.any? { |issue| issue.include?('claude-inbox-automation') }, issues.inspect)
-        assert(issues.any? { |issue| issue.include?('correction note count is 0') }, issues.inspect)
+        assert(!issues.any? { |issue| issue.include?('correction note count is 0') }, issues.inspect)
+      end
+      true
+    end
+  end
+
+  test_category('Q0 portfolio scope and host portability') do
+    test('missing retired memories are optional but active handoff stays required') do
+      Dir.mktmpdir('clean-session-optional') do |root|
+        sources, _note = clean_session_fixture(root)
+        ValidationReport::CLEAN_SESSION_SUPERSEDED_LABELS.each { |label| File.unlink(sources.fetch(label)) }
+        subject = CleanSessionTruthHarness.new(root: root, sources: sources, correction_notes: [])
+        issues = []
+        subject.send(:check_clean_session_truth, issues)
+        assert_eq([], issues)
+        File.unlink(sources.fetch('active-handoff'))
+        subject.send(:check_clean_session_truth, issues)
+        assert(issues.any? { |issue| issue.include?('source missing: active-handoff') }, issues.inspect)
+      end
+      true
+    end
+
+    test('map and manifest include free apps, renamed repos, iOS, and unknown lanes') do
+      Dir.mktmpdir('portfolio-scope') do |root|
+        FileUtils.mkdir_p(File.join(root, 'meta'))
+        File.write(File.join(root, 'meta/PROJECT_MAP.md'), <<~MAP)
+          | Project | Path | Repo |
+          | Books | `apps/SaneBooks` | SaneBooks |
+          | Lot | `apps/SaneLot` | sanelot-ios |
+          | Sync | `apps/SaneSync` | SaneSync |
+          | Mystery | `apps/SaneMystery` | Mystery |
+          | Site | `websites/example.com` | website |
+        MAP
+        manifests = {
+          'SaneBooks' => { 'type' => 'macos_app', 'release' => { 'use_sparkle' => true, 'site_host' => 'zecbooks.app' } },
+          'SaneLot' => { 'type' => 'ios_app', 'release' => { 'enabled' => false }, 'appstore' => { 'enabled' => true, 'app_id' => '123', 'marketing_url' => 'https://sanelot.com/app', 'iap_policy' => 'none' } },
+          'SaneSync' => { 'type' => 'macos_app', 'release' => { 'use_sparkle' => true } },
+          'SaneMystery' => {}
+        }
+        manifests.each do |name, manifest|
+          FileUtils.mkdir_p(File.join(root, 'apps', name))
+          File.write(File.join(root, 'apps', name, '.saneprocess'), manifest.to_yaml)
+        end
+        FileUtils.mkdir_p(File.join(root, 'websites/example.com/.git'))
+        subject = ValidationReport.new
+        subject.define_singleton_method(:sane_apps_root) { root }
+        subject.define_singleton_method(:load_product_config) do
+          { products: { 'sanebooks' => { 'name' => 'ZecBooks', 'github_repo' => 'sane-apps/SaneBooks' } } }
+        end
+        products = subject.send(:product_definitions)
+        assert_eq(4, products.size)
+        assert_eq(File.join(root, 'apps/SaneBooks'), products.find { |p| p[:name] == 'ZecBooks' }[:project_path])
+        assert_eq('sanelot.com', products.find { |p| p[:name] == 'SaneLot' }[:domain])
+        assert_eq(%w[SaneSync ZecBooks], subject.send(:direct_download_product_definitions).map { |p| p[:name] }.sort)
+        assert_eq(4, subject.send(:released_product_definitions).size)
+        assert(subject.send(:validation_projects).include?('websites/example.com'))
+        issues = []
+        subject.send(:check_portfolio_coverage, issues)
+        assert_eq(1, issues.size)
+        assert(issues.first.include?('INCOMPLETE: SaneMystery release lane is unknown'), issues.inspect)
+        assert(subject.instance_variable_get(:@metrics)[:portfolio_coverage][:other_projects].first[:release_status].include?('INCOMPLETE'))
+      end
+      true
+    end
+
+    test('secret scanner repair commands use the executing host home') do
+      subject = ValidationReport.new
+      subject.define_singleton_method(:latest_secret_scan_receipt_path) { nil }
+      subject.send(:q15_secret_scan_receipt)
+      warning = subject.instance_variable_get(:@warnings).last
+      action = subject.send(:finding_action, 'Q15 SECRET SCAN: missing receipt')
+      [warning, action].each do |message|
+        assert(message.include?('secret_scan --path "$HOME"'), message)
+        assert(!message.include?('/Users/sj'), message)
       end
       true
     end
@@ -1030,6 +1106,51 @@ exit(run_tests('Validation report tests') do
 
         assert(issues.any? { |issue| issue.include?("Unknown checkout redirect route 'old-bundle'") })
       end
+      true
+    end
+
+    test('flags checkout Worker routes that do not match products.yml') do
+      subject = WebsiteDistributionHarness.new(products: [])
+      config = {
+        products: {
+          'sanebar' => { 'donation_url' => 'https://github.com/sponsors/MrSaneApps' },
+          'saneclick' => { 'checkout_uuid' => 'click-id' }
+        },
+        bundles: {
+          'bundle' => {
+            'checkout_url' => 'https://saneapps.lemonsqueezy.com/checkout/custom/bundle-id?signature=abc'
+          }
+        },
+        checkout_base: 'https://saneapps.lemonsqueezy.com/checkout/buy'
+      }
+      worker_source = <<~JS
+        const PRODUCT_LINKS = {
+          'sanebar': 'https://saneapps.lemonsqueezy.com/checkout/buy/old-bar',
+          'saneclick': 'https://saneapps.lemonsqueezy.com/checkout/buy/click-id'
+        };
+      JS
+
+      mismatches = subject.send(:checkout_worker_link_mismatches, config, worker_source)
+
+      assert(mismatches.any? { |issue| issue.include?('sanebar') && issue.include?('mismatch') })
+      assert(mismatches.any? { |issue| issue.include?('missing bundle') })
+      assert(mismatches.none? { |issue| issue.include?('saneclick') })
+      true
+    end
+
+    test('checkout Worker PRODUCT_LINKS match live products.yml') do
+      subject = WebsiteDistributionHarness.new(products: [])
+      raw = YAML.safe_load(File.read(File.expand_path('../config/products.yml', __dir__)), permitted_classes: [])
+      live_config = {
+        products: raw.fetch('products'),
+        bundles: raw.fetch('bundles', {}),
+        checkout_base: raw.dig('store', 'checkout_base').to_s
+      }
+      worker_source = File.read(File.expand_path('../../cloudflare-workers/sane-checkout.js', __dir__))
+
+      mismatches = subject.send(:checkout_worker_link_mismatches, live_config, worker_source)
+
+      assert_eq([], mismatches)
       true
     end
   end
