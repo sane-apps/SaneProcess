@@ -185,8 +185,14 @@ and `executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Brows
 The canonical route is `scripts/mini/capture-web-screenshot.sh`; pass
 the exact project Git root with `--source-root`, then `--viewport desktop`
 (1440x1000) or `--viewport 375` (375x900). The receipt binds target HEAD,
-branch, dirty status, and a deterministic source/config manifest across the Air
-and Mini; the wrapper rejects path escape, mismatch, or capture-time drift.
+branch, dirty status, and a deterministic source/config manifest. Mini-local
+capture checks source stability without self-SSH or claiming Air parity;
+Air-to-Mini capture also checks peer parity. The wrapper rejects path escape,
+mismatch, or capture-time drift. Use `--reduced-motion reduce` when inspecting
+the native accessibility state of pages whose existing CSS hides scroll-driven
+animations in full-page captures. Default is `no-preference`; receipts record
+the actual motion setting. Reduced-motion proof does not verify the default
+animated flow. Inspect each saved image before marking its receipt inspected.
 Save screenshots under `outputs/playwright/` or the workflow's existing
 `outputs/<workflow>/visual/` directory.
 
@@ -522,6 +528,12 @@ release:
 ruby scripts/SaneMaster.rb upgrade_path_proof
 ruby scripts/SaneMaster.rb release_preflight
 ```
+
+For unsigned macOS unit tests, set release.upgrade_path_test.unsigned_tests to true.
+This forwards the explicit monitor_tests --unsigned option and uses the same
+signing overrides as unit-only verify. Signed tests remain the default; this
+does not provide signed-app, permission, or customer GUI proof.
+
 
 The configured process must drive the customer-observable upgrade behavior and
 write the JSON result and runtime artifact at the paths supplied by

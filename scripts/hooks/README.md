@@ -14,8 +14,8 @@ file:
 | `session_start.rb` | SessionStart | Bootstraps session, resets stale state, prints briefing |
 | `saneprompt.rb` | UserPromptSubmit | Classifies prompts and handles commands (`rb-`, `s+`, etc.) |
 | `sanetools.rb` | PreToolUse | Gates edits on research, blocks risky paths/routes, trips circuit breaker |
-| `sanetrack.rb` | PostToolUse | Tracks research evidence, edits, failures, and proof state |
-| `task_completed_gate.rb` | TaskCompleted | Blocks completion claims without required verification evidence |
+| `sanetrack.rb` | PostToolUse | Tracks research evidence, edits, failures, proof state, and fresh persistence debt |
+| `task_completed_gate.rb` | TaskCompleted | Blocks completion claims without required verification or current handoff/memory checkpoints |
 | `sanestop.rb` | Stop | Session summary, verification gate, handoff/memory reminders |
 
 Hook-layer counts move as guardrails are extracted. Use the commands below for
@@ -91,7 +91,7 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 | `core/local_ui_guard.rb` | Mini-first local UI guard helpers |
 | `core/visual_receipt.rb` | Visual evidence receipt helpers |
 | `core/session_docs.rb` | Session document gate helpers |
-| `core/context_compact.rb` | Context compaction helpers |
+| `core/context_compact.rb` | Early context warning that requires persistence debt to be cleared before compaction |
 | `core/sop_score.rb` | Shared SOP score rubric |
 
 ## Self-Test Modules
@@ -176,4 +176,3 @@ cp scripts/hooks/cursor/gui_feedback_stop.rb ~/.cursor/hooks/
 chmod +x ~/.cursor/hooks/gui_feedback_*.rb
 # Merge hooks.json.example into ~/.cursor/hooks.json (afterShellExecution + stop)
 ```
-

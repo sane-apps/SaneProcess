@@ -542,7 +542,11 @@ Together the three signals triangulate intent from evidence, not the agent's say
 ### ADR-012: Mini maintenance and restart are separate fail-safe lanes (2026-07-14)
 
 The Mac Mini is an always-on build and operations server. Daily hygiene must
-never shut down or restart it. The deep `machine_cleanup` pass is bounded, and
+never shut down or restart it. The daily guard skips all cleanup during active
+build/runtime work or an open Codex/ChatGPT coding client. Server cleanup also
+checks fresh process state before scanning files and before applying a plan;
+unknown state fails closed. The duplicate 02:44 disk-clean job is retired.
+The deep `machine_cleanup` pass is bounded, and
 its timeout/failure is nonfatal so the remaining lightweight hygiene still
 runs. Routine cleanup preserves Downloads and unrelated Trash contents and
 rejects symlinked cleanup roots/children.
