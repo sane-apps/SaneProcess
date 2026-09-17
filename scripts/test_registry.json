@@ -1028,6 +1028,152 @@
         "ruby",
         "scripts/sanemaster/resource_soak_targets_test.rb"
       ]
+    },
+    {
+      "path": "scripts/automation/dl_report_test.py",
+      "label": "SaneProcess qualified funnel analytics tests",
+      "status": "required",
+      "cmd": [
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+        "-B",
+        "scripts/automation/dl_report_test.py"
+      ]
+    },
+    {
+      "path": "scripts/runtime_log_test.rb",
+      "label": "SaneProcess saved runtime log lifecycle tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/runtime_log_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/sanemaster/customer_ui_evidence_integrity_test.rb",
+      "label": "Customer UI runtime evidence integrity regressions",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/customer_ui_evidence_integrity_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/work_session_test.rb",
+      "label": "SaneProcess bounded work-session protection",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/work_session_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/check_inbox_issues_test.py",
+      "label": "Support issue queue ownership regression",
+      "status": "required",
+      "cmd": [
+        "python3",
+        "scripts/automation/check_inbox_issues_test.py"
+      ]
+    },
+    {
+      "path": "scripts/automation/agent_heartbeat_test.rb",
+      "label": "SaneProcess Recurring agent heartbeat policy tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/agent_heartbeat_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/internal_report_test.rb",
+      "label": "SaneProcess Internal release reports tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/internal_report_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/sanehosts_email_campaign_test.py",
+      "label": "SaneProcess SaneHosts email campaign planning tests",
+      "status": "required",
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/sanehosts_email_campaign_test.py"
+      ]
+    },
+    {
+      "path": "scripts/hooks/gui_feedback_test.rb",
+      "label": "SaneProcess GUI action feedback tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/hooks/gui_feedback_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/hooks/core/hook_payload_test.rb",
+      "label": "SaneProcess hook payload parser tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/hooks/core/hook_payload_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/hooks/sane_brief_linter_test.rb",
+      "label": "SaneProcess subagent brief completeness tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sane_brief_linter_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/mini/mini_screenshot_evidence_test.rb",
+      "label": "SaneProcess Mini screenshot evidence tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/mini/mini_screenshot_evidence_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/project_links_test.rb",
+      "label": "SaneProcess Shared project links tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/project_links_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/sanemaster/release_guardrail_signing_verify_test.rb",
+      "label": "SaneProcess Release signing and test destinations tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/release_guardrail_signing_verify_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/sanemaster/verify_process_guard_test.rb",
+      "label": "SaneProcess Test process ownership tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/verify_process_guard_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/testflight_artifact_proof_test.rb",
+      "label": "SaneProcess TestFlight artifact proof tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/testflight_artifact_proof_test.rb"
+      ]
     }
   ]
 }

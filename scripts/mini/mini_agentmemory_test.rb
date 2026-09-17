@@ -51,6 +51,8 @@ exit(run_tests('Mini AgentMemory Tests') do
       Dir.mktmpdir('agentmemory-supervisor') do |dir|
         fake_bin = File.join(dir, 'agentmemory')
         count = File.join(dir, 'status-count')
+        livez = File.join(dir, 'livez')
+        File.write(livez, 'ok')
         File.write(fake_bin, <<~SH)
           #!/bin/sh
           case "${1:-}" in
@@ -81,6 +83,7 @@ exit(run_tests('Mini AgentMemory Tests') do
           'SANE_AGENTMEMORY_HEALTH_MISSES' => '2',
           'SANE_AGENTMEMORY_STARTUP_ATTEMPTS' => '2',
           'SANE_AGENTMEMORY_STARTUP_INTERVAL' => '0.1',
+          'SANE_AGENTMEMORY_LIVEZ_URL' => "file://#{livez}",
           'STATUS_COUNT' => count
         }
         _out, err, status = Open3.capture3(env, '/bin/bash', SUPERVISOR)
@@ -115,9 +118,12 @@ exit(run_tests('Mini AgentMemory Tests') do
           exit 0
         SH
         FileUtils.chmod(0o755, [fake_bin, fake_launchctl, fake_sudo])
+        livez = File.join(dir, 'livez')
+        File.write(livez, 'ok')
         env = {
           'HOME' => dir,
           'SANE_AGENTMEMORY_BIN' => fake_bin,
+          'SANE_AGENTMEMORY_LIVEZ_URL' => "file://#{livez}",
           'SANE_AGENTMEMORY_PLIST' => plist,
           'SANE_AGENTMEMORY_LOG_DIR' => File.join(dir, 'logs'),
           'SANE_AGENTMEMORY_SUPERVISOR' => supervisor,
