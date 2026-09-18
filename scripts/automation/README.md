@@ -8,7 +8,7 @@ repo-root-safe rule:
 
 ## Prerequisites
 
-- `OPENAI_API_KEY` available in the shell environment for GPT audit fallbacks
+- `OPENAI_API_KEY` in the shell environment only for `gpt_audit.py --backend responses-api` (the default `codex-exec` backend needs no key)
 - Git repositories with tags (for release notes)
 - SaneApps projects at `~/SaneApps/apps/`
 
@@ -191,7 +191,7 @@ python3 scripts/automation/hosted-file-actions.py --xlsx /tmp/hosted_file_action
 
 **Upload staging rule:** `~/Desktop/LemonSqueezy-Uploads` should contain only the latest ZIP for each direct-download app. Move older app ZIPs to Trash before opening Lemon Squeezy; do not leave old release files in the picker.
 
-**Dashboard cleanup rule:** after replacing a product file in Lemon Squeezy, delete or unpublish old hosted ZIPs for that variant so customers see only the current release. Rerun the tracker and keep the evidence with the release notes.
+**Dashboard cleanup rule:** after replacing a product file in Lemon Squeezy, delete old hosted ZIPs for that variant so only the newest remains. Unpublishing is not cleanup. Do not claim the hosted-file step done while a superseded ZIP is still listed. Rerun the tracker and keep the evidence with the release notes.
 
 **Canonical path:** prefer `ruby ../SaneMaster.rb hosted_file_actions` from the repo root.
 

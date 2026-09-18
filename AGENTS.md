@@ -136,11 +136,8 @@ Apple Docs, macOS Automator, Grok, Codex, Claude, and SaneMaster routes instead.
 
 Before any Workers AI or NIM **inference** call, follow `docs/LLM_VENDOR_API_SOP.md`. Use `scripts/llm_api_research_gate.rb` then smoke. Hook: `scripts/hooks/sane_llm_api_guard.rb` (via `sane_bash_guards.rb`). This is separate from the NVIDIA-agent ban (`nv` sweeps / `nvidia_vision`) — NIM draft APIs are allowed only with the SOP/receipt path.
 
-Reviewer count is perspective-driven, not capped by the active client's native
-interactive-thread limit. Use native subagents for stateful/interactive work
-and read-only ephemeral `codex exec` fan-out for isolated perspectives; use
-waves only as a fallback. See `DEVELOPMENT.md` under "Reviewer fan-out routing"
-for the canonical route and required live tool/version discovery.
+Reviewer routing is perspective-driven. Canonical route, thread sizing, and live
+tool/version discovery: `DEVELOPMENT.md` under "Reviewer fan-out routing".
 
 ## Canonical Routes
 
@@ -151,21 +148,12 @@ the wrapper.
 | Need | Canonical Route |
 |------|-----------------|
 | Build/test | `ruby scripts/SaneMaster.rb verify` |
-| App runtime test | `ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb AppName` or `ruby scripts/SaneMaster.rb test_mode` |
 | Release clearance | `ruby scripts/SaneMaster.rb release_preflight` |
-| App Store clearance | `ruby scripts/SaneMaster.rb appstore_preflight` only for enabled App Store lanes |
-| Setapp status | `ruby scripts/SaneMaster.rb setapp_status`; `Needs Revision` means waiting on us |
-| Setapp upload | `ruby scripts/SaneMaster.rb setapp_upload`; portal fallback must be followed by `setapp_status` / `In Review` proof |
-| Full release | `bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project $(pwd) --full ...` |
-| Website deploy | Use the project's documented deploy wrapper when present (for example `bash deploy.sh`); otherwise use shared `release.sh --website-only` |
-| Work email | `ruby scripts/SaneMaster.rb check_inbox` or `~/SaneApps/infra/scripts/check-inbox.sh` |
-| Sales/download/funnel | `sales`, `downloads`, `events` |
+| Work email | `ruby scripts/SaneMaster.rb check_inbox` |
 | Tool discovery | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` |
-| Cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host local --apply --preserve-apps AppName` (Air) or `--host mini --apply` / `--server` (Mini). Plans generated junk by kind, not free space. |
-| Verification scope plan | `ruby scripts/SaneMaster.rb proof_plan --task "..."` |
-| Process health | `process_eval`, `sop_review`, `near_miss_review`, `verify_failure_review` |
-| Route cost review | `ruby scripts/SaneMaster.rb route_cost_review --json` |
-| Mini screenshot | `scripts/mini/capture-mini-screenshot.sh desktop` or app mode wrapper |
+| Mini screenshot | `scripts/mini/capture-mini-screenshot.sh desktop` |
+
+Full command map: `DEVELOPMENT.md` under "SaneMaster Commands".
 
 Runtime app tests must attach a live app log stream from before launch/relaunch through
 the tested workflow and save the receipt path. GUI/runtime results without live logs are invalid.
@@ -177,26 +165,9 @@ canonical Mini screenshot wrapper or fix that wrapper.
 
 ## Browser And App Control
 
-Before driving a portal, dashboard, or visible desktop app, check the live tool
-surface. If Browser or Chrome control is active, use it through `node_repl` for
-Brave/Chrome DOM work before raw AppleScript, screenshots, SSH capture, or
-manual browsing.
-
-Mini browser work is Brave-only (owner rule, 2026-07-14): Claude drives Brave on
-the Mini through the Claude-in-Chrome extension; Codex drives Brave through its
-Chrome-control lane. Do not script Safari (AppleScript `do JavaScript`, cookie
-extraction, front-tab reads) for portal or web-proof work — Safari is routinely
-not running and its automation breaks. Tools whose fallback is a Safari cookie
-(e.g. `setapp_status` portal token) should be run through the Brave portal path
-or a refreshed stored token instead. Corrected 2026-07-15: the owner retired
-the App Store Connect Safari exception — ASC and Apple ID portal work also runs
-through Brave on the Mini; `scripts/mini/mini-safari.sh` is legacy, do not
-extend it.
-
-For visible native app/window state, use Computer Use `get_app_state` before
-falling back to screenshot-only inspection. Use `macos-automator` for
-deterministic AppleScript/JXA and app-specific automation tips. Use Playwright
-with the SaneApps Brave defaults for repeatable website QA.
+Mini browser work is Brave-only (owner rule, 2026-07-14): never script Safari
+for portal or web-proof work. Full control ladder: `DEVELOPMENT.md` under
+"Reviewer fan-out routing" (browser and app-control ladder).
 
 Mini Terminal-host rule: cleanup must never unminimize, raise, maximize, or
 activate an automation Terminal window. Use title-scoped reclaim during an app
@@ -245,17 +216,10 @@ The Mac Mini is the canonical SaneApps build/test/runtime host.
 
 ## Visual/UI Proof
 
-Green tests are not enough for customer-facing UI claims.
-
-- Capture clean saved Mini screenshots for every customer-facing view/state
-  touched or claimed verified.
-- Inspect screenshots for clipping, overlap, contrast, confusing copy,
-  obstructed prompts, and dark-mode quality.
-- Record screenshot paths and verdicts in `SESSION_HANDOFF.md` or an
-  `outputs/visual-audit*/` receipt.
-- For release/UI/runtime gates, use the runner that writes durable receipts.
-  `process_eval --require-ui-proof` treats missing or local-only UI proof as a
-  blocker.
+Green tests are not enough for customer-facing UI claims. Capture clean saved
+Mini screenshots for every customer-facing view/state touched, inspect them,
+and record paths plus verdicts. Full freshness, claim-mapping, and validity
+rules: `DEVELOPMENT.md` under "Runtime And Visual Evidence".
 
 ## GUI / Portal Feedback Loop
 
@@ -268,9 +232,8 @@ re-read dialog/page/AX/API state before claiming done. Shared detector:
 
 Default mailbox: SaneApps work email `hi@saneapps.com`.
 
-- Use `check-inbox.sh` / `SaneMaster.rb check_inbox`; never manual email API
-  curl. For campaign receipts, run `check-inbox.sh campaign-audit --subject "..."
-  --since <ISO-8601>` for every subject; it joins Resend and Cloudflare history.
+- Use `check-inbox.sh` / `SaneMaster.rb check_inbox`. Full inbox, media-review,
+  and approval flow: `DEVELOPMENT.md` under "Support And Business Signals".
 - Run `review <id>` before reply or resolve.
 - Show the exact draft and wait for explicit approval before sending.
 - Existing app users should be told to update from inside the app. Do not send
@@ -308,9 +271,8 @@ media, identity ambiguity, and promises about unfixed bugs.
   App Store lanes.
 - Use public release-note terminology `Basic` and `Pro`; never public
   "free mode" wording.
-- Compare release notes against support promises, GitHub replies, and research.
-- Direct-download and App Store private setup details live in
-  `DEVELOPER_SETUP.md` and `templates/RELEASE_SOP.md`.
+- Everything else (note comparison, lane setup, wrapper commands) lives in
+  `templates/RELEASE_SOP.md` and `DEVELOPMENT.md`.
 
 ## SaneUI Gate
 
@@ -326,7 +288,11 @@ No Keychain prompt floods.
 
 - Fetch each secret once and reuse it.
 - No `security` calls in loops, retries, background jobs, or parallel runs.
-- Hot-path keys live in `~/.config/nv/env`; Keychain is fallback.
+- `~/.config/nv/env` holds loader functions only, zero plaintext. Every secret
+  lives in macOS Keychain service `sane-env` behind `_sane_export_secret NAME`
+  lines that must precede the `unset -f` line.
+- A locked login keychain (reboot before console unlock) means shells load
+  empty secrets; that is an empty-secrets watch-item, not missing config.
 - Validation defaults to no prompt mode. Credential-backed checks must say they
   were skipped unless explicit prompt/keychain flags are enabled.
 

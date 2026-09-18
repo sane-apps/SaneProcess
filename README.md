@@ -7,7 +7,7 @@
 **Workflow guardrails for coding agents and LLM-assisted development.**
 
 SaneProcess gives coding agents a shared operating system for development work: clear instructions, stop conditions, research gates, verification commands, and release checks that keep them from looping, skipping tests, or mutating the wrong files.
-Codex is the primary SaneApps toolset. Claude Code gets the strongest native hook enforcement today, and other repo-aware agents can use the same SOP through `AGENTS.md`, reusable skills, MCP, `SaneMaster.rb`, and project scripts.
+Regular daily work is Grok, Grokbot, and Cursor. Claude Code still has the strongest native hook enforcement, and Codex/Claude stay as compatibility adapters. Other repo-aware agents use the same SOP through `AGENTS.md`, reusable skills, MCP, `SaneMaster.rb`, and project scripts.
 The source of truth stays client-neutral so switching tools does not create a second workflow.
 
 MIT licensed. Ruby. macOS + Linux. Used across the SaneApps portfolio.
@@ -148,16 +148,11 @@ Useful public commands:
 ruby scripts/SaneMaster.rb verify
 ruby scripts/SaneMaster.rb status
 ruby scripts/SaneMaster.rb release_preflight
-ruby scripts/SaneMaster.rb appstore_preflight  # only when .saneprocess appstore.enabled: true
 ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"
 ruby scripts/SaneMaster.rb secret_scan --path "$HOME"
-ruby scripts/SaneMaster.rb runtime_evidence --dry-run --break Sources/App.swift:42
-ruby scripts/SaneMaster.rb visual_smoke --app ExampleApp --dry-run
-ruby scripts/SaneMaster.rb process_metrics --json
-ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
-ruby scripts/SaneMaster.rb gate_review test/fixtures/gates/weak_test_evidence.json
-ruby scripts/SaneMaster.rb saneui_guard /path/to/app
 ```
+
+Full command map: [DEVELOPMENT.md](DEVELOPMENT.md) under "SaneMaster Commands".
 
 `secret_scan` uses Automic Vault when available, writes redacted receipts under
 `outputs/secret-scan/`, and fails on actionable plaintext secrets while
@@ -169,7 +164,7 @@ Project-specific installs can add their own release, support, analytics, or remo
 
 ## Optional Remote Runners
 
-SaneProcess does not require a second machine. The default path is local verification:
+SaneProcess does not require a second machine. The default path is local verification (the SaneApps-operator overlay in DEVELOPMENT.md uses Mini-first instead):
 
 ```bash
 ruby scripts/SaneMaster.rb verify

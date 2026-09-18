@@ -45,7 +45,6 @@ ruby scripts/hooks/gui_feedback_test.rb
 ruby scripts/hooks/test_hooks.rb
 ruby scripts/hooks/session_docs_test.rb
 ruby scripts/hooks/grok_and_security_guard_test.rb
-ruby scripts/hooks/test_hooks.rb
 ```
 
 Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused commands above are the hook-layer slices.
@@ -59,7 +58,6 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 | `s+` | Enable safemode (blocks edits) |
 | `s-` | Disable safemode |
 | `s?` | Show safemode status |
-| `research` | Show research progress |
 
 ## Support Modules
 
@@ -141,9 +139,9 @@ Before edits allowed, complete the always-required categories plus any MCP-backe
 
 | Category | Satisfied by | Required? |
 |----------|--------------|-----------|
-| docs | `mcp__context7__*`, `mcp__apple-docs__*` | If docs MCPs configured |
+| docs | `mcp__apple-docs__*` (`context7` is toggled off, not callable) | If docs MCPs configured |
 | web | `WebSearch`, `WebFetch` | Always |
-| github | `mcp__github__*` | If GitHub MCP configured |
+| github | `gh` skill (`mcp__github__*` no longer gates research) | If GitHub work configured |
 | local | `Read`, `Grep`, `Glob` | Always |
 
 ## Circuit Breaker
@@ -153,6 +151,34 @@ Trips at:
 - 2x same error signature (even with successes between)
 
 Reset with `rb-` command.
+
+## Bash-Boundary Blocks
+
+`sane_bash_guards.rb` blocks these at the Bash boundary (exit 2, no override).
+Agents hit these cold — read the block message and use the canonical path.
+
+| Block | Code | Use instead |
+|---|---|---|
+| Destructive `security` keychain mutations (`add-*-password -U`, `delete-*`, `set-*-partition-list`; reads stay allowed) | `sane_bash_guards.rb:308-355` | Run it in your own terminal; never from the agent |
+| Detached Mini QA via `launchctl submit` (`run_sanebar_qa`, `Scripts/qa.rb`, `SANEBAR_RUN_RUNTIME_SMOKE`, `SaneMaster.rb release_preflight`) | `sane_bash_guards.rb:96-106` | Foreground canonical release/runtime commands |
+| Safari automation, including `mini-safari.sh` (`osascript tell … "Safari"`, `open -a Safari`) | `sane_bash_guards.rb:366-403` | Brave on the Mini |
+| Raw remote screen capture (`screencapture`, `peekaboo image`/`capture`/`list`, `ffmpeg` + `avfoundation` over ssh) | `sane_bash_guards.rb:68-94` | `mini-gui-run.sh` / `capture-mini-screenshot.sh` |
+
+## Local-UI Guard (Air)
+
+On the Air, `core/local_ui_guard.rb:97-153` blocks three things: editing
+`SaneApps/apps/*` source, `pbcopy`/`pbpaste` (Universal Clipboard contaminates
+the Mini's Clip history), and driving SaneApps UI / Peekaboo / HID locally.
+Use `ssh mini` and `mini-gui-run.sh` on the Mini. The ONLY fallback after
+explicit owner approval prefixes the shell command (an `export` inside the
+command does not count) or sets hook-process env:
+
+```bash
+SANE_APPROVE_LOCAL_UI_ON_AIR='MR. SANE APPROVES LOCAL UI ON AIR' …
+SANE_MINI_UNAVAILABLE='MR. SANE CONFIRMS MINI UNAVAILABLE' …
+```
+
+The phrases must match exactly (`core/local_ui_guard.rb:20-21,44-67`).
 
 ## Files
 
@@ -165,11 +191,8 @@ Reset with `rb-` command.
 
 ## Testing
 
-Run the full test suite:
-```bash
-ruby scripts/hooks/test_hooks.rb
-ruby scripts/SaneMaster.rb verify
-```
+Hook-layer commands live in Quick Start above. Full verification remains
+`ruby scripts/SaneMaster.rb verify`.
 
 ## Cursor GUI feedback
 

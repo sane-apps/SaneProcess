@@ -87,19 +87,9 @@ is required because AgentMemory's database is `~/data/state_store.db`. The Air u
 `scripts/automation/agentmemory-mcp-air.sh` to create a bounded SSH tunnel to
 the Mini and then starts the stdio MCP shim.
 
-File-backed Claude, Serena, and Codex memories are synchronized from the Air at
-login and every 15 minutes by `com.saneapps.memory-sync`. The implementation is
-`scripts/automation/sync-memory-mini.sh`:
-
-- cross-host lock with stale-lock recovery;
-- backup-first, no-delete operation;
-- checksum verification;
-- newest-mtime selection with losing same-file versions retained as
-  `.sane-conflict-*` files on both Macs;
-- clean skip when the Mini is temporarily unreachable;
-- non-clobbering Mini dirty-work snapshots pulled into the Air outputs folder.
-
-Run an exact interactive verification from the Air:
+File-backed memory sync (`com.saneapps.memory-sync`, Air login + every 15 min)
+is owned by the automation README `install-memory-sync-agent.sh` section.
+Acceptance command from the Air:
 
 ```bash
 bash scripts/automation/sync-memory-mini.sh mini --strict
@@ -125,8 +115,14 @@ The Mini never performs a daily shutdown or restart.
 
 - macOS sleep, display sleep, and disk sleep are disabled.
 - Restart after power failure is enabled.
-- `mini-memory-guard.sh` performs daily restart-free hygiene. Its deep cleanup
-  has a 20-minute process-group deadline and never invokes a power command.
+- `mini-memory-guard.sh` performs daily restart-free hygiene. It skips the whole
+  run while build/runtime work or the Codex/ChatGPT coding app is active. Its
+  deep cleanup has a 20-minute process-group deadline and never invokes a power command.
+- Server `machine_cleanup` checks a fresh process inventory before filesystem
+  planning and again before applying the plan; unknown process state also blocks it.
+- The duplicate 02:44 `com.saneapps.disk-clean` job and its untracked
+  `~/.sanemaster/tools/mini-{nightly-disk,disk-clean}.sh` scripts are retired.
+  `deploy.sh` removes those legacy paths; daily hygiene stays in the canonical guard.
 - Routine cleanup preserves Downloads and the user's entire Trash, rejects
   symlinked roots/children, and only trashes allowlisted generated artifacts.
 - A root-owned weekly restart gate runs Sunday at 10:30, 11:30, and 12:30. The
@@ -158,7 +154,7 @@ sudo tail -50 /var/log/sane-mini-weekly-restart.log
 | `mini-install-nightly-agent.sh` | On demand | Installs the nightly build/report agent |
 | `mini-nightly.sh` | 8:45 AM daily | Builds/tests active repos and writes the nightly report |
 | `mini-memory-guard.sh` | 5:40 AM daily on Mini | Restart-free hygiene with bounded deep cleanup |
-| `session-guardian.sh` | every 10 minutes on Air and Mini | Reap dead-parent MCP leftovers; page Air on sustained unexpected CPU |
+| `session-guardian.sh` | every 10 minutes on Air and Mini | Hook-layer guard — see hooks README Architecture table |
 | `mini-install-memory-guard.sh` | On demand | Mini: `com.saneapps.memory-guard`. Air: `com.saneapps.machine-cleanup` at 5:40 AM |
 | `mini-weekly-restart.sh` | Sunday retry windows | Root guarded weekly restart |
 | `mini-install-weekly-restart.sh` | On demand | Installs the root helper and LaunchDaemon |
@@ -193,10 +189,7 @@ ruby scripts/SaneMaster.rb sync_mini
 bash scripts/automation/sync-codex-mini.sh mini --no-restart
 ```
 
-`sync-codex-mini.sh` rewrites the Air-specific AgentMemory tunnel configuration
-to the Mini's direct `npx -y @agentmemory/mcp` loopback configuration. Production
-Codex automation records remain API-owned and Mini-only; use `automation_update`
-for those records.
+Codex control-plane sync is owned by the automation README `sync-codex-mini.sh` section; the commands above are the operator path.
 
 ## Release And GUI Work
 
