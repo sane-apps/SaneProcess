@@ -11,6 +11,7 @@ LOCAL_PORT="${SANE_AGENTMEMORY_LOCAL_PORT:-3111}"
 APPLE_DOCS_PORT="${SANE_APPLE_DOCS_LOCAL_PORT:-37911}"
 MACOS_AUTOMATOR_PORT="${SANE_MACOS_AUTOMATOR_LOCAL_PORT:-37913}"
 XCODE_PORT="${SANE_XCODE_LOCAL_PORT:-37915}"
+SERENA_PORT="${SANE_SERENA_LOCAL_PORT:-37917}"
 URL="${SANE_AGENTMEMORY_URL:-http://127.0.0.1:$LOCAL_PORT}"
 LAUNCHCTL="${SANE_LAUNCHCTL_BIN:-/bin/launchctl}"
 CURL="${SANE_CURL_BIN:-/usr/bin/curl}"
@@ -30,9 +31,9 @@ health_ready() {
 
 if [[ "${1:-}" == "--tunnel" ]]; then
   [[ "$#" -eq 1 ]] || usage
-  exec "$SSH" -N \
+  exec "$SSH" -n -N -S none \
     -o BatchMode=yes \
-    -o ConnectTimeout=3 \
+    -o ConnectTimeout=15 \
     -o ExitOnForwardFailure=yes \
     -o ServerAliveInterval=15 \
     -o ServerAliveCountMax=3 \
@@ -40,6 +41,7 @@ if [[ "${1:-}" == "--tunnel" ]]; then
     -L "$APPLE_DOCS_PORT:127.0.0.1:37911" \
     -L "$MACOS_AUTOMATOR_PORT:127.0.0.1:37913" \
     -L "$XCODE_PORT:127.0.0.1:37915" \
+    -L "$SERENA_PORT:127.0.0.1:37917" \
     "$MINI_HOST"
 fi
 
