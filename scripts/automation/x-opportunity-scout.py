@@ -365,6 +365,11 @@ def normalize_post(item: Any, entry: dict[str, str]) -> dict[str, Any]:
 
 
 def run_live_search(queries: list[dict[str, str]], per_query: int) -> list[dict[str, Any]]:
+    if os.environ.get("ALLOW_X_API_SCOUT", "").strip() != "1":
+        raise ScoutError(
+            "X Developer API scout is disabled. Opportunity search now uses the Grok "
+            "subscription X search lane. Set ALLOW_X_API_SCOUT=1 only for an explicit owner override."
+        )
     try:
         from xdk import Client
         from xdk.oauth1_auth import OAuth1

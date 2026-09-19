@@ -317,12 +317,47 @@ class SeoSiteAuditTests(unittest.TestCase):
             self.assertEqual(1, checked)
             self.assertFalse(any("appcast.xml" in issue for issue in issues), issues)
 
+    def test_donation_labels_must_not_link_to_app_checkout(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            page = root / "index.html"
+            page.write_text(
+                '<a href="https://go.saneapps.com/buy/saneclick?ref=website">'
+                '<svg><path /></svg> <span>Donate</span></a>'
+                '<a href="/buy/example">Donate</a>'
+                '<a href="https://go.saneapps.com/buy/saneclip">Buy SaneClip</a>'
+                '<a href="https://github.com/sponsors/MrSaneApps">Sponsor on GitHub</a>',
+                encoding="utf-8",
+            )
+            site = module.Site("Fixture", root, "https://fixture.test", "/images/og-image.png")
+            _, issues = module.audit_page(site, page)
+            failures = [issue for issue in issues if "donation link points to app checkout" in issue]
+            self.assertEqual(len(failures), 1, issues)
+            self.assertIn("buy/saneclick", failures[0])
+
+    def test_social_image_accepts_configured_name_without_leaving_site(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "site"
+            configured = root / "assets/social-card.png"
+            write_png(configured)
+            write_png(root / "assets/unrelated.png")
+            write_png(Path(tmp) / "og-image.png")
+            site = module.Site("Fixture", root, "https://fixture.test", "/assets/social-card.png")
+            resolve = lambda url: module.local_social_image_path(site, root / "index.html", url)
+            self.assertEqual(resolve("https://fixture.test/assets/social-card.png?v=test"), configured.resolve())
+            self.assertIsNone(resolve("https://fixture.test/assets/unrelated.png?v=test"))
+            self.assertIsNone(resolve("https://fixture.test/../og-image.png?v=test"))
+            self.assertIsNone(resolve("https://other.test/assets/social-card.png?v=test"))
+            self.assertIsNone(resolve("http://fixture.test/assets/social-card.png?v=test"))
+
     def test_current_saneapps_sites_pass_seo_audit(self):
         module = load_module()
         checked, issues = module.audit_sites()
-        # The live page count moves as active sites gain pages; assert broad
-        # coverage without pinning the exact count or retired products.
-        self.assertGreaterEqual(checked, 98)
+        # Every configured site must have pages; page totals change as sites evolve.
+        for site in module.DEFAULT_SITES:
+            self.assertTrue(list(module.html_files(site)), site.name)
         self.assertEqual([], issues)
 
 

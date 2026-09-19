@@ -9,6 +9,8 @@ module SaneMasterModules
       'inbox' => 'check_inbox',
       'sync-mini' => 'sync_mini',
       'sync-grok' => 'sync_grok',
+      'sync-cursor' => 'sync_cursor',
+      'sync-control-plane' => 'sync_control_plane',
       'operator-brief' => 'operator_brief',
       'brief' => 'operator_brief',
       'business-appointment' => 'business_appointment',

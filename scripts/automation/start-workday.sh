@@ -1,6 +1,6 @@
 #!/bin/bash
-# Start-of-day workflow from MacBook Air. Automation state is managed only by
-# Codex automation_update and is outside this control-plane sync.
+# Start-of-day workflow from MacBook Air. Recurring Mini jobs use LaunchAgents;
+# Cursor Automations stay UI-owned on the controller.
 
 set -euo pipefail
 
@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 ROOT="$HOME/SaneApps/infra/SaneProcess"
-SYNC_SCRIPT="$ROOT/scripts/automation/sync-codex-mini.sh"
+SYNC_SCRIPT="$ROOT/scripts/automation/sync-control-plane.sh"
 RECONCILE_SCRIPT="$ROOT/scripts/automation/reconcile-air-mini.sh"
 OUT_DIR="$ROOT/outputs"
 LOCAL_INBOX="$HOME/SaneApps/infra/scripts/check-inbox.sh"
@@ -49,8 +49,8 @@ LOCAL_INBOX="$HOME/SaneApps/infra/scripts/check-inbox.sh"
 mkdir -p "$OUT_DIR"
 
 echo "== SaneOps Workday Start =="
-echo "1) Syncing the Codex control-plane profile to Mini..."
-bash "$SYNC_SCRIPT" "$MINI_HOST" --no-restart
+echo "1) Syncing Cursor + Grok control-plane profile to Mini..."
+bash "$SYNC_SCRIPT" "$MINI_HOST" --quiet
 
 echo ""
 echo "2) Air↔Mini repo reconcile..."
@@ -64,7 +64,7 @@ scp -q "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/morning_report.md" "$OUT
 scp -q "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/nightly_report.md" "$OUT_DIR/nightly_report.mini.md" 2>/dev/null || true
 
 echo ""
-echo "4) Automation state remains API-owned; inspect it in Codex Scheduled when needed."
+echo "4) Mini recurring jobs use LaunchAgents; see scripts/automation/recurring-jobs.md."
 
 echo ""
 echo "5) Inbox summary (local):"
@@ -77,7 +77,7 @@ fi
 if [[ "$OPEN_FILES" -eq 1 ]]; then
   [[ -f "$OUT_DIR/morning_report.mini.md" ]] && open "$OUT_DIR/morning_report.mini.md" || true
   [[ -f "$OUT_DIR/nightly_report.mini.md" ]] && open "$OUT_DIR/nightly_report.mini.md" || true
-  open -ga Codex || true
+  open -ga Cursor || true
 fi
 
 echo ""

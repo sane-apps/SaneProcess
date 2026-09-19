@@ -12,7 +12,7 @@ require 'time'
 require 'uri'
 
 module SaneInternalReport
-  TEMPLATE_VERSION = 1
+  TEMPLATE_VERSION = 2
   APP_REVIEW_KIND = 'app_review_transition'
   CWS_REVIEW_KIND = 'chrome_web_store_transition'
   KIND = APP_REVIEW_KIND
@@ -28,44 +28,202 @@ module SaneInternalReport
 
   module_function
 
+  STORE_LABELS = {
+    APP_REVIEW_KIND => 'App Store',
+    CWS_REVIEW_KIND => 'Chrome Web Store'
+  }.freeze
+
+  STATE_LABELS = {
+    'PENDING_REVIEW' => 'waiting for review',
+    'WAITING_FOR_REVIEW' => 'waiting for review',
+    'IN_REVIEW' => 'in review',
+    'READY_FOR_REVIEW' => 'ready to submit for review',
+    'REJECTED' => 'rejected',
+    'PUBLISHED' => 'live in the store',
+    'READY_FOR_SALE' => 'approved and ready for sale',
+    'PREPARE_FOR_SUBMISSION' => 'being prepared for submission',
+    'DEVELOPER_REJECTED' => 'removed by the developer',
+    'METADATA_REJECTED' => 'metadata rejected',
+    'INVALID_BINARY' => 'binary rejected',
+    'UNRESOLVED_ISSUES' => 'has unresolved issues',
+    'TAKEN_DOWN' => 'removed from the store',
+    'WARNED' => 'flagged with a warning',
+    'PROCESSING' => 'processing',
+    'PENDING_DEVELOPER_ACTION' => 'waiting on you',
+    'REPLACED' => 'replaced by a newer submission',
+    'ACCEPTED' => 'accepted'
+  }.freeze
+
+  def store_label(kind)
+    STORE_LABELS.fetch(kind, 'store')
+  end
+
+  def human_state(state)
+    key = state.to_s.strip.upcase
+    return 'first seen' if key.empty?
+
+    STATE_LABELS.fetch(key, key.downcase.tr('_', ' '))
+  end
+
+  def format_detected_at(iso8601)
+    time = Time.parse(iso8601.to_s)
+    zone = Time.now.zone
+    time.localtime.strftime("%b %-d, %Y at %-l:%M %p #{zone}").squeeze(' ')
+  rescue ArgumentError
+    iso8601.to_s
+  end
+
+  def version_phrase(change)
+    previous_version = change['previous_version'].to_s.strip
+    version = change['version'].to_s.strip
+    return nil if version.empty?
+
+    if !previous_version.empty? && previous_version != version
+      "Version #{version} (previously #{previous_version})"
+    else
+      "Version #{version}"
+    end
+  end
+
+  def transition_headline(change, kind)
+    app_name = change.fetch('app_name')
+    store = store_label(kind)
+    previous = change['previous_state'].to_s
+    current = change.fetch('state').to_s
+    previous_label = human_state(previous)
+    current_label = human_state(current)
+
+    if previous.empty?
+      return "#{app_name} is now #{current_label} on the #{store}."
+    end
+
+    if previous == current
+      version_line = version_phrase(change)
+      return "#{app_name} has a new package on the #{store} while still #{current_label}." if version_line
+
+      return "#{app_name} changed on the #{store} (still #{current_label})."
+    end
+
+    case current.upcase
+    when 'REJECTED'
+      "#{app_name} was rejected by the #{store}."
+    when 'PENDING_REVIEW', 'WAITING_FOR_REVIEW', 'IN_REVIEW'
+      if previous.upcase == 'REJECTED'
+        "#{app_name} was submitted again and is now waiting for #{store} review."
+      else
+        "#{app_name} is now waiting for #{store} review."
+      end
+    when 'PUBLISHED', 'READY_FOR_SALE'
+      "#{app_name} is approved and live on the #{store}."
+    when 'TAKEN_DOWN'
+      "#{app_name} was removed from the #{store}."
+    when 'WARNED'
+      "#{app_name} received a warning from the #{store}."
+    when 'UNRESOLVED_ISSUES'
+      "#{app_name} has unresolved issues on the #{store}."
+    else
+      "#{app_name} moved from #{previous_label} to #{current_label} on the #{store}."
+    end
+  end
+
+  def transition_meaning(change, kind)
+    store = store_label(kind)
+    previous = change['previous_state'].to_s
+    current = change.fetch('state').to_s
+    version_line = version_phrase(change)
+
+    lines = []
+    if previous.empty?
+      lines << "The watcher saw this #{store} status for the first time."
+    elsif previous == current && version_line
+      lines << "The review status did not change, but the uploaded package version did."
+    else
+      lines << "Previous status: #{human_state(previous)}."
+      lines << "Current status: #{human_state(current)}."
+    end
+    lines << version_line if version_line
+    lines.join("\n")
+  end
+
+  def transition_action(change, kind)
+    current = change.fetch('state').to_s.upcase
+    store = store_label(kind)
+
+    case current
+    when 'REJECTED', 'METADATA_REJECTED', 'INVALID_BINARY', 'UNRESOLVED_ISSUES'
+      "Open the #{store} developer dashboard, read the rejection or issue details, fix them, and submit again when ready."
+    when 'PENDING_REVIEW', 'WAITING_FOR_REVIEW', 'IN_REVIEW', 'PROCESSING'
+      "Nothing right now. You'll get another email when #{store} approves or rejects it."
+    when 'PUBLISHED', 'READY_FOR_SALE', 'ACCEPTED'
+      "Check the public listing and confirm customers see the version you expect."
+    when 'TAKEN_DOWN', 'WARNED'
+      "Open the #{store} developer dashboard and read what happened."
+    when 'PENDING_DEVELOPER_ACTION'
+      "Open the #{store} developer dashboard. This status usually means they need something from you."
+    else
+      "Open the #{store} developer dashboard if you want the full detail."
+    end
+  end
+
+  def render_subject(event)
+    kind = event['kind'].to_s.empty? ? KIND : event.fetch('kind')
+    changes = event.fetch('changes')
+    names = changes.map { |change| change.fetch('app_name') }.uniq.sort
+    primary = changes.first
+    store = store_label(kind)
+    current = primary.fetch('state').to_s.upcase
+    app = names.length == 1 ? names.first : 'SaneApps'
+
+    subject =
+      case current
+      when 'REJECTED', 'METADATA_REJECTED', 'INVALID_BINARY'
+        "#{app}: rejected by #{store}"
+      when 'PENDING_REVIEW', 'WAITING_FOR_REVIEW', 'IN_REVIEW'
+        "#{app}: waiting for #{store} review"
+      when 'PUBLISHED', 'READY_FOR_SALE'
+        "#{app}: live on #{store}"
+      when 'TAKEN_DOWN'
+        "#{app}: removed from #{store}"
+      when 'WARNED'
+        "#{app}: warning from #{store}"
+      when 'UNRESOLVED_ISSUES'
+        "#{app}: unresolved #{store} issues"
+      else
+        "#{app}: #{store} status update"
+      end
+    subject.length > 160 ? subject[0, 157] + '...' : subject
+  end
+
   def render(event)
     validate_event!(event)
     kind = event['kind'].to_s.empty? ? KIND : event.fetch('kind')
-    names = event.fetch('changes').map { |change| change.fetch('app_name') }.uniq.sort
-    chrome_web_store = kind == CWS_REVIEW_KIND
-    subject =
-      if chrome_web_store
-        names.length == 1 ? "Chrome Web Store changed: #{names.first}" : 'SaneApps Chrome Web Store changed'
-      else
-        names.length == 1 ? "App Review changed: #{names.first}" : 'SaneApps App Review changed'
-      end
+    store = store_label(kind)
+    changes = event.fetch('changes').sort_by { |change| change.fetch('entity_key') }
     lines = [
-      chrome_web_store ? 'Chrome Web Store reported a review-state transition.' :
-        'App Store Connect reported a review-state transition.',
+      transition_headline(changes.first, kind),
       '',
-      *event.fetch('changes').sort_by { |change| change.fetch('entity_key') }.map do |change|
-        previous = change['previous_state'].to_s.empty? ? 'new' : change['previous_state']
-        detail = "#{change.fetch('app_name')}: #{change.fetch('entity_type')} #{previous} -> #{change.fetch('state')}"
-        previous_version = change['previous_version'].to_s
-        version = change['version'].to_s
-        if !version.empty? && !previous_version.empty? && previous_version != version
-          detail = "#{detail} (version #{previous_version} -> #{version})"
-        elsif !version.empty?
-          detail = "#{detail} (version #{version})"
-        end
-        submission_id = change['submission_id'].to_s
-        submission_id.empty? ? detail : "#{detail} (submission #{submission_id})"
+      *changes.flat_map do |change|
+        block = [
+          "Product: #{change.fetch('app_name')}",
+          "Store: #{store}",
+          transition_meaning(change, kind),
+          '',
+          'What to do:',
+          transition_action(change, kind)
+        ]
+        block << '' unless change == changes.last
+        block
       end,
-      '',
-      "Event: #{event.fetch('id')}",
-      "Detected: #{event.fetch('first_seen_at')}"
+      '---',
+      "Reference ID: #{event.fetch('id')}",
+      "Detected: #{format_detected_at(event.fetch('first_seen_at'))}"
     ]
     {
       'kind' => kind,
       'template_version' => TEMPLATE_VERSION,
       'event_id' => event.fetch('id'),
-      'subject' => subject,
-      'body' => lines.join("\n")
+      'subject' => render_subject(event),
+      'body' => lines.join("\n").gsub(/\n{3,}/, "\n\n")
     }
   end
 
