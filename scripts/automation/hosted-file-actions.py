@@ -19,6 +19,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+import urllib.parse
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -192,8 +193,9 @@ def fetch_json(url: str, api_key: str | None = None) -> dict[str, Any] | list[An
     try:
         with urllib.request.urlopen(req, timeout=20) as response:
             return json.load(response)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        return None
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        # Never turn an unreadable inventory into an empty successful report.
+        raise RuntimeError(f"Hosted-file API read failed ({type(exc).__name__})") from None
 
 
 def fetch_text(url: str) -> str:
@@ -220,11 +222,29 @@ def fetch_text(url: str) -> str:
 
 
 def fetch_collection(path: str, api_key: str) -> list[dict[str, Any]]:
-    payload = fetch_json(f"{API_BASE}{path}", api_key=api_key)
-    if not isinstance(payload, dict):
-        return []
-    data = payload.get("data")
-    return data if isinstance(data, list) else []
+    url = f"{API_BASE}{path}"
+    records = []
+    seen = set()
+    for _ in range(100):
+        if url in seen or not url.startswith(f"{API_BASE}/v1/"):
+            raise RuntimeError("Invalid hosted-file API pagination")
+        seen.add(url)
+        payload = fetch_json(url, api_key=api_key)
+        if not isinstance(payload, dict) or payload.get("errors") or not isinstance(payload.get("data"), list):
+            raise RuntimeError("Invalid hosted-file API collection")
+        if any(not isinstance(record, dict) for record in payload["data"]):
+            raise RuntimeError("Invalid hosted-file API record")
+        records.extend(payload["data"])
+        next_url = (payload.get("links") or {}).get("next")
+        if not next_url:
+            pagination = (payload.get("meta") or {}).get("page") or {}
+            if pagination.get("currentPage", 1) < pagination.get("lastPage", 1):
+                raise RuntimeError("Incomplete hosted-file API pagination")
+            return records
+        if not isinstance(next_url, str):
+            raise RuntimeError("Invalid hosted-file API next-page link")
+        url = urllib.parse.urljoin(API_BASE, next_url)
+    raise RuntimeError("Hosted-file API pagination exceeded 100 pages")
 
 
 def fetch_appcast_release(url: str) -> tuple[str, str]:
@@ -267,7 +287,7 @@ def select_display_file(
     files: list[dict[str, Any]],
     expected_version: str,
 ) -> dict[str, Any] | None:
-    candidates = published_files(files) or files
+    candidates = published_files(files)
     for record in candidates:
         if expected_version and extract_version_from_filename(file_name(record)) == expected_version:
             return record
@@ -306,11 +326,48 @@ def find_product_record(app_name: str, products: list[dict[str, Any]]) -> dict[s
     return None
 
 
-def find_variant_record(product_id: str, variants: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for record in variants:
-        if str(record.get("attributes", {}).get("product_id", "")) == str(product_id):
-            return record
-    return None
+def find_variant_record(
+    product_id: str,
+    variants: list[dict[str, Any]],
+    preferred_variant_id: str | None = None,
+) -> dict[str, Any] | None:
+    matches = [record for record in variants
+               if str(record.get("attributes", {}).get("product_id", "")) == str(product_id)]
+    if not matches:
+        return None
+    if preferred_variant_id:
+        preferred = next(
+            (record for record in matches if str(record.get("id", "")).strip() == str(preferred_variant_id).strip()),
+            None,
+        )
+        if preferred is None:
+            raise RuntimeError(
+                f"Product {product_id} has no variant {preferred_variant_id} "
+                f"(found {', '.join(str(record.get('id')) for record in matches)})"
+            )
+        return preferred
+    if len(matches) == 1:
+        return matches[0]
+
+    # Prefer the live storefront variant when Lemon keeps a draft sibling.
+    published = [
+        record for record in matches
+        if str(record.get("attributes", {}).get("status", "")).strip().lower() == "published"
+    ]
+    if len(published) == 1:
+        return published[0]
+
+    named_default = [
+        record for record in matches
+        if str(record.get("attributes", {}).get("name", "")).strip().lower() == "default"
+    ]
+    if len(named_default) == 1:
+        return named_default[0]
+
+    raise RuntimeError(
+        f"Product {product_id} needs explicit variant mapping ({len(matches)} variants); "
+        "set lemon_variant_id in config/products.yml"
+    )
 
 
 def build_snapshot_rows(config: dict[str, Any], api_key: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -331,7 +388,12 @@ def build_snapshot_rows(config: dict[str, Any], api_key: str) -> tuple[list[dict
             continue
         product_id = str(product_record.get("id", "")).strip()
         product_slug = str(product_record.get("attributes", {}).get("slug", "")).strip()
-        variant_record = find_variant_record(product_id, variants)
+        preferred_variant_id = str(product.get("lemon_variant_id", "")).strip() or None
+        variant_record = find_variant_record(
+            product_id,
+            variants,
+            preferred_variant_id=preferred_variant_id,
+        )
         variant_id = str(variant_record.get("id", "")).strip() if variant_record else ""
 
         files = fetch_collection(f"/v1/variants/{variant_id}/files?page[size]=100", api_key) if variant_id else []
@@ -340,7 +402,14 @@ def build_snapshot_rows(config: dict[str, Any], api_key: str) -> tuple[list[dict
         filename = file_name(displayed_file)
         hosted_version = extract_version_from_filename(filename)
         extra_filenames = stale_published_file_names(files, expected_version) if expected_version else []
-        if not expected_version:
+        newer_hosted = expected_version and any(
+            tuple(map(int, version.split("."))) > tuple(map(int, expected_version.split(".")))
+            for record in visible_files
+            if (version := extract_version_from_filename(file_name(record)))
+        )
+        if newer_hosted:
+            status = "Needs release evidence"
+        elif not expected_version:
             status = "Needs appcast evidence"
         elif hosted_version == expected_version and not extra_filenames:
             status = "In sync"
@@ -369,7 +438,12 @@ def build_snapshot_rows(config: dict[str, Any], api_key: str) -> tuple[list[dict
         if status == "In sync":
             continue
 
-        if status == "Needs appcast evidence":
+        if status == "Needs release evidence":
+            instructions = (
+                "A published hosted file is newer than the appcast. Reconcile release and artifact evidence "
+                "before changing files; do not downgrade or remove the newer archive."
+            )
+        elif status == "Needs appcast evidence":
             instructions = (
                 f"Check {appcast_url} from the Mini, confirm the latest Sparkle version, "
                 "then rerun this tracker before changing Lemon Squeezy hosted files."
@@ -377,14 +451,17 @@ def build_snapshot_rows(config: dict[str, Any], api_key: str) -> tuple[list[dict
         elif status == "Needs dashboard cleanup":
             instructions = (
                 f"Open {row['dashboard_url']}, go to Files for variant {variant_id or 'Default'}, "
-                f"delete or unpublish every old file ({row['extra_filenames']}), and leave only "
-                f"{filename or f'{app_name}-{expected_version}.zip'} published for customers."
+                f"verify the published replacement downloads correctly and matches the approved artifact first. "
+                f"Then remove only confirmed superseded files ({row['extra_filenames']}); preserve any "
+                "archive still required for supported OS compatibility. Filename parity alone is not byte or runtime proof."
             )
         else:
             instructions = (
                 f"Open {row['dashboard_url']}, go to Files for variant {variant_id or 'Default'}, "
                 f"replace the published file with the {expected_version} archive from {dist_url or appcast_url}, "
-                "delete or unpublish old files, and confirm only the appcast-matching ZIP remains published."
+                "verify the published replacement download against the approved artifact, then delete "
+                "old hosted files so only the newest remains. Do not leave superseded ZIPs unpublished-but-listed. "
+                "Preserve required compatibility archives only when the owner explicitly kept them."
             )
 
         actions.append(
@@ -455,7 +532,7 @@ def audit_upload_folder(path: Path, snapshot: list[dict[str, str]]) -> dict[str,
             continue
         expected = expected_by_app[matched_app]
         row = {
-            "status": "ok" if candidate.name == expected else "stale",
+            "status": "filename_match" if candidate.name == expected else "different_from_appcast",
             "app": matched_app,
             "filename": candidate.name,
             "expected_filename": expected,
@@ -656,8 +733,8 @@ def write_evidence(path: Path, payload: dict[str, Any]) -> None:
                 f"Upload folder stale/missing rows: {len(upload_rows)}",
                 "",
                 "Lemon Squeezy exposes read APIs for hosted files, but replacement is still a dashboard action.",
-                "After replacing files, delete or unpublish old hosted ZIPs, rerun this exporter, and keep the new evidence file with the release notes.",
-                "The local LemonSqueezy-Uploads folder should contain only the latest ZIP for each direct-download app.",
+                "After replacing files, delete old hosted ZIPs so only the newest remains, rerun this exporter, and keep the new evidence file with the release notes.",
+                "Retain earlier local archives until the replacement is verified remotely. Folder rows compare filenames only; a different filename may be a newer candidate or required compatibility archive, not a deletion instruction.",
                 "",
                 "## Current Actions",
                 "",
@@ -687,7 +764,7 @@ def main() -> None:
     parser.add_argument(
         "--uploads-dir",
         default=str(DEFAULT_UPLOADS_DIR),
-        help="Audit the local LemonSqueezy-Uploads staging folder for stale ZIPs",
+        help="Compare local staging filenames with the live appcast; no deletion or byte verification",
     )
     parser.add_argument("--xlsx", help="Output XLSX path")
     args = parser.parse_args()
@@ -735,10 +812,14 @@ def main() -> None:
     stale_uploads = len(upload_folder.get("stale_files") or [])
     missing_uploads = len(upload_folder.get("missing_latest") or [])
     unexpected_uploads = len(upload_folder.get("unexpected_files") or [])
-    print(f"Upload folder stale: {stale_uploads}, missing latest: {missing_uploads}, unexpected: {unexpected_uploads}")
+    print(f"Upload folder different from appcast: {stale_uploads}, missing appcast file: {missing_uploads}, unmapped: {unexpected_uploads}")
     if args.evidence_out:
         print(f"Wrote evidence {Path(args.evidence_out).expanduser()}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)

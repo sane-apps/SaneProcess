@@ -160,6 +160,48 @@ end
 
 exit(run_tests('TaskCompleted Gate Tests') do
   test_category('Verification enforcement') do
+    test('blocks completion while significant work has persistence debt') do
+      state = edit_state(['README.md'])
+      state['handoff_tracking'] = {
+        'significant_edits' => 1,
+        'significant_files' => ['README.md'],
+        'always_persist_required' => true,
+        'always_persist_files' => ['README.md'],
+        'handoff_updated' => false,
+        'memory_updated' => false
+      }
+
+      _stdout, stderr, status = run_task_completed_gate(
+        repo_name: 'TaskGatePersistenceDebt',
+        state: state
+      )
+
+      assert_eq(status.exitstatus, 2)
+      assert_includes(stderr, 'undocumented significant work')
+      assert_includes(stderr, 'durable memory')
+      true
+    end
+
+    test('allows docs-only completion after fresh handoff and memory checkpoints') do
+      state = edit_state(['README.md'])
+      state['handoff_tracking'] = {
+        'significant_edits' => 1,
+        'significant_files' => ['README.md'],
+        'always_persist_required' => true,
+        'always_persist_files' => ['README.md'],
+        'handoff_updated' => true,
+        'memory_updated' => true
+      }
+
+      _stdout, stderr, status = run_task_completed_gate(
+        repo_name: 'TaskGatePersistenceCurrent',
+        state: state
+      )
+
+      assert_eq(status.exitstatus, 0, stderr)
+      true
+    end
+
     test('blocks app task completion without recent verification') do
       app_name = 'TaskGateNoVerify'
 

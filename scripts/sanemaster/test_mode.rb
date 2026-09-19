@@ -6,6 +6,7 @@ module SaneMasterModules
     require 'fileutils'
     require 'open3'
     require 'tmpdir'
+    require_relative '../runtime_log'
 
     SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneVideo].freeze
     SIGNED_RELEASE_RUNTIME_APPS = %w[SaneClip].freeze
@@ -61,7 +62,7 @@ module SaneMasterModules
 
       # STALE BUILD DETECTION - prevents launching outdated binaries
       binary_time = File.mtime(app_bundle_executable_path(app_path))
-      source_files = project_swift_sources
+      source_files = project_build_inputs
       newest_source = source_files.max_by { |f| File.mtime(f) }
 
       if newest_source && File.mtime(newest_source) > binary_time
@@ -72,7 +73,7 @@ module SaneMasterModules
         puts ''
         puts '⚠️  STALE BUILD DETECTED!'
         puts "   Binary built: #{age_str}"
-        puts "   Source newer: #{stale_file} (#{File.mtime(newest_source).strftime('%H:%M:%S')})"
+        puts "   Build input newer: #{stale_file} (#{File.mtime(newest_source).strftime('%H:%M:%S')})"
         puts ''
 
         if args.include?('--force')
@@ -102,8 +103,6 @@ module SaneMasterModules
       direct_launch = direct_binary_launch_required?(launch_path)
       return false unless launch_path_gatekeeper_ready?(launch_path, direct_launch: direct_launch)
 
-      reconcile_accessibility_trust_local(launch_path)
-
       puts "📱 Launching: #{launch_path}"
       capture_logs = args.include?('--logs')
       allow_keychain = args.include?('--allow-keychain')
@@ -114,10 +113,12 @@ module SaneMasterModules
       kill_other_saneapps_processes
 
       executable_path = File.join(launch_path, 'Contents', 'MacOS', project_name)
+      @runtime_log = start_runtime_log(args)
 
       if capture_logs
         puts '📝 Capturing logs to stdout...'
         pid = spawn(env_vars, executable_path, *launch_args)
+        @runtime_log.launched!([pid])
         Process.wait(pid)
       elsif direct_launch
         puts '🚀 Launching directly by executable path to avoid LaunchServices Gatekeeper dialogs...'
@@ -151,7 +152,12 @@ module SaneMasterModules
         puts "✅ App launched (fresh build verified, #{mode_label})"
       end
 
+      @runtime_log.launched!(local_app_processes(launch_path).map { |line| line.split.first.to_i }) unless capture_logs
+      launch_succeeded = true
+      @runtime_log.detach
       true
+    ensure
+      @runtime_log&.stop unless launch_succeeded
     end
 
     def restore_xcode
@@ -209,12 +215,14 @@ module SaneMasterModules
 
       kill_existing_processes
       kill_other_saneapps_processes
-      cleanup_stale_log_streams
       show_screenshots(screenshots_dir)
       show_diagnostic_reports(crash_dir)
       return unless build_app(args)
 
       launch_args = []
+      if (index = args.index('--log-seconds'))
+        launch_args += args[index, 2]
+      end
       launch_args << '--release' if args.include?('--release')
       launch_args << '--proddebug' if args.include?('--proddebug')
       launch_args << '--force' if args.include?('--force')
@@ -225,16 +233,12 @@ module SaneMasterModules
       sleep 2
       print_test_mode_ready
 
-      if args.include?('--no-logs')
-        puts '📡 Live log streaming skipped (--no-logs).'
-        return
+      unless args.include?('--no-logs') || args.include?('--quiet-logs')
+        puts '📡 Following saved live logs (Ctrl+C stops capture)...'
+        @runtime_log.follow
       end
-
-      # Stream logs in background - non-sandboxed app uses unified logging
-      puts '📡 Streaming live logs in background...'
-      puts '   (Non-sandboxed app - using unified logging)'
-      puts '─' * 60
-      spawn('/usr/bin/log', 'stream', '--predicate', "process == \"#{project_name}\"", '--style', 'compact')
+    ensure
+      @runtime_log&.stop if $!
     end
 
     def show_app_logs(args)
@@ -289,9 +293,10 @@ module SaneMasterModules
       puts ''
     end
 
-    def cleanup_stale_log_streams
-      pattern = "log stream --predicate process == \"#{project_name}\""
-      system('pkill', '-f', pattern, err: File::NULL)
+    def start_runtime_log(args)
+      @runtime_log&.stop
+      SaneRuntimeLog.new(project_dir: Dir.pwd, app_name: project_name,
+                         seconds: SaneRuntimeLog.duration(args)).start
     end
 
     def ensure_single_instance
@@ -666,103 +671,6 @@ module SaneMasterModules
       false
     end
 
-    def reconcile_accessibility_trust_local(app_path)
-      bundle_id = bundle_id_for_app(app_path)
-      return unless bundle_id
-
-      db_paths = accessibility_tcc_db_paths
-      return if db_paths.empty?
-
-      # Clean legacy dev-bundle aliases that create duplicate Accessibility rows
-      # in System Settings and can lock users out of the actively launched app.
-      legacy_aliases = [bundle_id.sub(/\.app\z/, '.dev')].uniq.reject { |id| id == bundle_id }
-      legacy_aliases.each do |legacy_id|
-        system('tccutil', 'reset', 'Accessibility', legacy_id, out: File::NULL, err: File::NULL)
-      end
-
-      denied_rows_by_db = {}
-
-      db_paths.each do |db_path|
-        rows = accessibility_tcc_rows(db_path, bundle_id)
-        next if rows.empty?
-
-        denied_rows = rows.select { |row| row[:auth_value].to_i.zero? }
-        denied_rows_by_db[db_path] = denied_rows unless denied_rows.empty?
-
-        stale_row_ids = []
-        rows.each do |row|
-          row_id = row[:row_id]
-          csreq_hex = row[:csreq_hex]
-
-          if csreq_hex.nil? || csreq_hex.empty?
-            stale_row_ids << row_id
-            next
-          end
-
-          csreq_path = File.join(Dir.tmpdir, "sanemaster-ax-#{project_name}-#{row_id}.csreq")
-          begin
-            File.binwrite(csreq_path, [csreq_hex].pack('H*'))
-            requirement = `csreq -r "#{csreq_path}" -t 2>/dev/null`.strip
-
-            if requirement.empty?
-              stale_row_ids << row_id
-              next
-            end
-
-            matches = system('codesign', "-R=#{requirement}", app_path, out: File::NULL, err: File::NULL)
-            stale_row_ids << row_id unless matches
-          ensure
-            FileUtils.rm_f(csreq_path)
-          end
-        end
-
-        next if stale_row_ids.empty?
-
-        puts "🧹 Repairing stale Accessibility rows for #{bundle_id} in #{db_path}"
-        system('killall', 'tccd', out: File::NULL, err: File::NULL)
-        system('sqlite3', db_path, "DELETE FROM access WHERE rowid IN (#{stale_row_ids.join(',')});", out: File::NULL, err: File::NULL)
-        system('killall', 'tccd', out: File::NULL, err: File::NULL)
-      end
-
-      denied_rows = denied_rows_by_db[system_accessibility_tcc_db_path]
-      return if denied_rows.nil? || denied_rows.empty?
-
-      auth_values = denied_rows.map { |row| row[:auth_value] }.uniq.sort.join(',')
-      puts "⚠️  System Accessibility row for #{bundle_id} is denied (auth_value=#{auth_values})."
-      puts '   Live AX verification is blocked until the password-gated Modify Settings sheet is completed.'
-    end
-
-    def accessibility_tcc_rows(db_path, bundle_id)
-      escaped_bundle = bundle_id.gsub("'", "''")
-      rows_raw = `sqlite3 "#{db_path}" "SELECT rowid || '|' || auth_value || '|' || IFNULL(hex(csreq), '') FROM access WHERE service='kTCCServiceAccessibility' AND client='#{escaped_bundle}';"`.strip
-      return [] if rows_raw.empty?
-
-      rows_raw.each_line.map do |line|
-        row = line.strip
-        next if row.empty?
-
-        row_id, auth_value, csreq_hex = row.split('|', 3)
-        next unless row_id && row_id.match?(/\A\d+\z/)
-
-        {
-          row_id: row_id,
-          auth_value: auth_value.to_i,
-          csreq_hex: csreq_hex.to_s
-        }
-      end.compact
-    end
-
-    def accessibility_tcc_db_paths
-      [
-        File.expand_path('~/Library/Application Support/com.apple.TCC/TCC.db'),
-        system_accessibility_tcc_db_path
-      ].uniq.select { |path| File.exist?(path) }
-    end
-
-    def system_accessibility_tcc_db_path
-      '/Library/Application Support/com.apple.TCC/TCC.db'
-    end
-
     def bundle_id_for_app(app_path)
       info_plist = File.join(app_path, 'Contents', 'Info.plist')
       return nil unless File.exist?(info_plist)
@@ -864,8 +772,8 @@ module SaneMasterModules
       puts '🧪 TEST MODE READY'
       puts '═' * 60
       puts ''
-      puts '📋 Logs: Using unified logging (non-sandboxed app)'
-      puts '   View with: ./scripts/SaneMaster.rb logs --follow'
+      puts "📋 Saved live log: #{@runtime_log.path}"
+      puts "   Receipt: #{@runtime_log.receipt_path}"
       puts ''
       puts "🕐 Session started: #{Time.now.strftime('%Y-%m-%d %H:%M:%S')}"
       puts ''
@@ -1257,11 +1165,18 @@ module SaneMasterModules
       ENV['SANEMASTER_BUILD_CONFIG'] || 'Debug'
     end
 
-    def project_swift_sources
-      ignored_roots = %w[.git build .build DerivedData node_modules vendor Pods releases fastlane].freeze
+    def project_build_inputs
+      ignored_roots = %w[.git build .build DerivedData node_modules vendor Pods releases fastlane outputs].freeze
+      # Dependency pins and generated Xcode config can change without a Swift edit.
+      patterns = %w[
+        **/*.swift **/project.yml **/project.yaml **/Package.swift **/Package.resolved
+        **/*.pbxproj **/*.xcconfig **/*.xcscheme **/*.xcworkspacedata
+        **/*.plist **/*.entitlements **/*.xcprivacy **/*.xcassets/**/*
+        **/*.xcstrings **/*.strings **/*.stringsdict **/*.metal **/*.storyboard **/*.xib
+      ]
 
-      Dir.glob('**/*.swift').reject do |path|
-        path.split(File::SEPARATOR).any? { |part| ignored_roots.include?(part) }
+      Dir.glob(patterns).uniq.select do |path|
+        File.file?(path) && !path.split(File::SEPARATOR).any? { |part| ignored_roots.include?(part) }
       end
     end
 

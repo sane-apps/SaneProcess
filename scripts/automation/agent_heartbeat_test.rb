@@ -31,7 +31,29 @@ assert(File.file?(File.join(root, 'automation', 'heartbeats', 'grok-stack-smoke.
 assert(File.file?(File.join(root, 'automation', 'heartbeats', 'sanelot-x-opportunity-scout.md')),
        'X scout must be a Grok heartbeat, not the paid X API')
 assert(install.include?('sanelot-x-opportunity-scout'), 'installer must schedule the Grok X scout')
+assert(File.file?(File.join(root, 'automation', 'heartbeats', 'sanelot-email-campaign.md')),
+       'SaneLot email campaign heartbeat prompt missing')
+assert(install.include?('sanelot-email-campaign'), 'installer must schedule the SaneLot email campaign')
+assert(install.include?('com.saneapps.agent-heartbeat.sanelot-email'),
+       'installer must register the SaneLot email LaunchAgent')
+assert(File.file?(File.join(root, 'automation', 'run-sanehosts-email-campaign.sh')),
+       'SaneHosts email campaign wrapper missing')
+assert(File.file?(File.join(root, 'automation', 'sanehosts_email_campaign.py')),
+       'SaneHosts email campaign runner missing')
+assert(install.include?('com.saneapps.sanehosts-email-campaign'),
+       'installer must register the SaneHosts email LaunchAgent')
+assert(install.include?('run-sanehosts-email-campaign.sh'),
+       'installer must chmod and schedule the SaneHosts Python sender')
 submit = File.read(File.join(root, 'appstore_submit.rb'))
 assert(submit.include?("mode: 'r:UTF-8'"), 'ASC env loader must not inherit US-ASCII from launchd')
+
+launch_ops = File.read(File.join(root, 'automation', 'heartbeats', 'saneapps-launch-ops.md'))
+sunday = launch_ops[/On Sunday only,.*?File memories remain source of truth\./m].to_s
+assert(sunday.include?('preflight') && sunday.include?('before stopping or changing'),
+       'Sunday refresh must check importer prerequisites before mutating the worker')
+assert(sunday.include?('leave the healthy store running') && !sunday.include?('perform the existing documented store reset'),
+       'missing importer must preserve the running store, not reset it')
+assert(!sunday.include?('Imported under 1000') && sunday.include?('current source inventory'),
+       'refresh completeness must compare current inputs, not a historical record quota')
 
 puts "PASS #{$assertion_count}/#{$assertion_count}"

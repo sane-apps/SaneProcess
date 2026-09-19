@@ -20,6 +20,7 @@ GUARDS = %w[
   sane_ship_guard.rb
   sane_email_guard.rb
   sane_llm_api_guard.rb
+  sane_push_guard.rb
 ].map { |name| File.expand_path(name, __dir__) }.freeze
 
 SSH_OPTION_WITH_VALUE = %w[
@@ -66,7 +67,7 @@ def raw_remote_screencapture?(remote)
 end
 
 def remote_peekaboo_screen_capture?(remote_text)
-  %w[image capture list].any? do |sub|
+  %w[image capture list see].any? do |sub|
     command_text_invokes?(remote_text, 'peekaboo', subcommand: sub)
   end
 end

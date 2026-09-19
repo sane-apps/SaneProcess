@@ -74,6 +74,7 @@ module SaneTrackStateUpdates
        tool_name.match?(/\Amcp__(?:memory|central-memory)__(?:add|create|delete|update|write)_/i)
       StateManager.update(:handoff_tracking) do |handoff|
         handoff[:memory_updated] = true
+        handoff[:memory_updated_at] = Time.now.iso8601
         handoff
       end
       return
@@ -89,6 +90,7 @@ module SaneTrackStateUpdates
     if file_path.match?(/SESSION_HANDOFF\.md$/i)
       StateManager.update(:handoff_tracking) do |handoff|
         handoff[:handoff_updated] = true
+        handoff[:handoff_updated_at] = Time.now.iso8601
         handoff
       end
       return
@@ -97,6 +99,7 @@ module SaneTrackStateUpdates
     if file_path.match?(/MEMORY\.md$/i) || file_path.match?(%r{memory/.*\.md$}i) || file_path.match?(%r{\.serena/memories/}i)
       StateManager.update(:handoff_tracking) do |handoff|
         handoff[:memory_updated] = true
+        handoff[:memory_updated_at] = Time.now.iso8601
         handoff
       end
       return
@@ -107,6 +110,7 @@ module SaneTrackStateUpdates
 
     if ALWAYS_PERSIST_FILE_PATTERNS.any? { |pattern| file_path.match?(pattern) }
       StateManager.update(:handoff_tracking) do |handoff|
+        mark_persistence_debt(handoff)
         handoff[:always_persist_required] = true
         handoff[:always_persist_files] ||= []
         handoff[:always_persist_files] << basename unless handoff[:always_persist_files].include?(basename)
@@ -121,6 +125,7 @@ module SaneTrackStateUpdates
     end
 
     StateManager.update(:handoff_tracking) do |handoff|
+      mark_persistence_debt(handoff)
       handoff[:significant_edits] = (handoff[:significant_edits] || 0) + 1
       handoff[:significant_files] ||= []
       handoff[:significant_files] << basename unless handoff[:significant_files].include?(basename)
@@ -129,5 +134,13 @@ module SaneTrackStateUpdates
     end
   rescue StandardError => e
     warn "⚠️  Handoff tracking error: #{e.message}" if ENV['DEBUG']
+  end
+
+  def mark_persistence_debt(handoff)
+    # A checkpoint only covers work that existed when it was written. Any later
+    # significant edit makes both persistence lanes stale again.
+    handoff[:handoff_updated] = false
+    handoff[:memory_updated] = false
+    handoff[:last_significant_at] = Time.now.iso8601
   end
 end

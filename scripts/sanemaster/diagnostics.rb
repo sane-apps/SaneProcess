@@ -8,7 +8,7 @@ module SaneMasterModules
       @project_name ||= File.basename(Dir.pwd)
     end
 
-    def diagnose(path, dump: false, since: nil)
+    def diagnose(path, dump: false, since: nil, log_path: nil)
       puts '🔬 --- [ SANEMASTER DIAGNOSE ] ---'
 
       # Project-specific diagnostics directory
@@ -18,12 +18,13 @@ module SaneMasterModules
       # AUTO-CLEANUP: Keep only last 3 exports to prevent stale log accumulation
       cleanup_old_exports
 
-      xcresult = path || find_latest_xcresult(since: since)
+      puts "📄 Command log: #{log_path}" if log_path
+      xcresult = path || (find_latest_xcresult(since: since) unless log_path)
       unless xcresult && File.exist?(xcresult)
         if since
           puts '❌ No .xcresult bundle found from the current test run.'
           puts '   The build may have failed before producing test results.'
-          puts '   Check test_output.txt for build errors.'
+          puts '   Check the command log in the current verify receipt for build errors.'
         else
           puts '❌ No .xcresult bundle found.'
           puts '   Run tests first: ./scripts/SaneMaster.rb verify'
@@ -580,7 +581,8 @@ module SaneMasterModules
       fl_logs = Dir.glob('fastlane/test_output/*.xcresult')
       tmp_logs = Dir.glob('/tmp/*.xcresult')
 
-      all = system_dd_logs + dd_logs + fl_logs + tmp_logs
+      canonical_logs = Dir.glob('outputs/{verify,monitor-tests}/*/*.xcresult')
+      all = canonical_logs + system_dd_logs + dd_logs + fl_logs + tmp_logs
       # Filter out stale xcresults from previous runs
       all = all.select { |f| File.mtime(f) >= since } if since
       all.max_by { |f| File.mtime(f) }

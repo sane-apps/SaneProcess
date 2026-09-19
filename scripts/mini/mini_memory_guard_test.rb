@@ -19,15 +19,17 @@ def write_executable(path, body)
   FileUtils.chmod(0o755, path)
 end
 
-def run_guard_fixture(cleanup_sleep: 0, timeout_seconds: 5, child_ignores_term: false)
+def run_guard_fixture(cleanup_sleep: 0, timeout_seconds: 5, child_ignores_term: false, work_active: false)
   Dir.mktmpdir('mini-memory-guard-test') do |home|
     bin = File.join(home, 'bin')
     FileUtils.mkdir_p(bin)
     power_marker = File.join(home, 'power-command-called')
+    health_marker = File.join(home, 'health-probe-called')
     child_pid_path = File.join(home, 'cleanup-child.pid')
 
     write_executable(File.join(bin, 'uptime'), <<~SH)
       #!/bin/sh
+      touch #{health_marker.inspect}
       echo '10:00 up 12 days, 1 user, load averages: 1.00 1.00 1.00'
     SH
     write_executable(File.join(bin, 'sysctl'), <<~SH)
@@ -44,7 +46,7 @@ def run_guard_fixture(cleanup_sleep: 0, timeout_seconds: 5, child_ignores_term: 
     SH
     write_executable(File.join(bin, 'pgrep'), <<~SH)
       #!/bin/sh
-      exit 1
+      #{work_active == :chatgpt ? %q{printf '%s\n' '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' | /usr/bin/grep -E -- "$2"} : "exit #{work_active ? 0 : 1}"}
     SH
     %w[osascript shutdown reboot halt poweroff].each do |command|
       write_executable(File.join(bin, command), <<~SH)
@@ -93,6 +95,7 @@ def run_guard_fixture(cleanup_sleep: 0, timeout_seconds: 5, child_ignores_term: 
       status: status,
       elapsed: elapsed,
       power_called: File.exist?(power_marker),
+      health_called: File.exist?(health_marker),
       child_alive: child_alive,
       guard_log: File.exist?(guard_log) ? File.read(guard_log) : ''
     }
@@ -100,6 +103,19 @@ def run_guard_fixture(cleanup_sleep: 0, timeout_seconds: 5, child_ignores_term: 
 end
 
 exit(run_tests('Mini Memory Guard Tests') do
+  test_category('active work') do
+    test('skips the entire scheduled run before health probes or cleanup') do
+      [true, :chatgpt].each do |work|
+        result = run_guard_fixture(work_active: work)
+        assert(result[:status].success?, result[:stderr])
+        assert_includes(result[:stdout], 'active work')
+        assert_eq(result[:health_called], false)
+        assert_eq(result[:child_alive], false)
+        assert_eq(result[:power_called], false)
+      end
+    end
+  end
+
   test_category('Cleanup coverage') do
     test('guards the high-risk accumulation roots') do
       assert_includes(guard_source, '$HOME/.sanemaster/routed-workspaces/')

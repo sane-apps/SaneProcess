@@ -64,20 +64,21 @@ def main() -> int:
                     body, inbound = parse_inbound(inbound)
                     if body is None:
                         break
-                    child.stdin.write(body + b"\n")
+                    # mcpbridge accepts JSON lines on stdin.
+                    child.stdin.write(body.rstrip() + b"\n")
                     child.stdin.flush()
             if child_out in rfds:
                 chunk = os.read(child_out, 8192)
                 if not chunk:
                     break
                 outbound += chunk
-                while b"\n" in outbound:
-                    line, outbound = outbound.split(b"\n", 1)
-                    line = line.strip()
-                    if not line:
-                        continue
-                    json.loads(line)
-                    write_content_length(out_fd, line)
+                while True:
+                    body, outbound = parse_inbound(outbound)
+                    if body is None:
+                        break
+                    json.loads(body)
+                    # Node MCP stdio wants JSON lines, not Content-Length.
+                    os.write(out_fd, body.rstrip() + b"\n")
     finally:
         if child.poll() is None:
             child.terminate()

@@ -87,9 +87,19 @@ is required because AgentMemory's database is `~/data/state_store.db`. The Air u
 `scripts/automation/agentmemory-mcp-air.sh` to create a bounded SSH tunnel to
 the Mini and then starts the stdio MCP shim.
 
-File-backed memory sync (`com.saneapps.memory-sync`, Air login + every 15 min)
-is owned by the automation README `install-memory-sync-agent.sh` section.
-Acceptance command from the Air:
+File-backed Claude, Serena, and Codex memories are synchronized from the Air at
+login and every 15 minutes by `com.saneapps.memory-sync`. The implementation is
+`scripts/automation/sync-memory-mini.sh`:
+
+- cross-host lock with stale-lock recovery;
+- backup-first, no-delete operation;
+- checksum verification;
+- newest-mtime selection with losing same-file versions retained as
+  `.sane-conflict-*` files on both Macs;
+- clean skip when the Mini is temporarily unreachable;
+- non-clobbering Mini dirty-work snapshots pulled into the Air outputs folder.
+
+Run an exact interactive verification from the Air:
 
 ```bash
 bash scripts/automation/sync-memory-mini.sh mini --strict
@@ -189,7 +199,10 @@ ruby scripts/SaneMaster.rb sync_mini
 bash scripts/automation/sync-codex-mini.sh mini --no-restart
 ```
 
-Codex control-plane sync is owned by the automation README `sync-codex-mini.sh` section; the commands above are the operator path.
+`sync-codex-mini.sh` rewrites the Air-specific AgentMemory tunnel configuration
+to the Mini's direct `npx -y @agentmemory/mcp` loopback configuration. Production
+Codex automation records remain API-owned and Mini-only; use `automation_update`
+for those records.
 
 ## Release And GUI Work
 

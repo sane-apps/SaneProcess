@@ -39,7 +39,7 @@ automation, UI/runtime, or multi-file work:
 1. Read `SESSION_HANDOFF.md`.
 2. Read relevant file memory and the active skill registry; query shared
    context with AgentMemory `memory_recall` or `memory_smart_search`.
-3. Run `~/.codex/bin/check-mcps` when MCP health affects the task.
+3. Run `~/.grok/bin/check-mcps` or `ruby scripts/SaneMaster.rb tool_discovery --query "mcp health"` when MCP health affects the task.
 4. Run `ruby scripts/validation_report.rb` for release/audit/process work.
    Add `--release-checklists` only when you need the deep all-app artifact
    checklist; the default report is the cheaper process/release verdict.
@@ -89,6 +89,18 @@ Workflow: PLAN -> VERIFY -> BUILD -> TEST -> CONFIRM -> PROPOSE COMMIT.
 
 Do not commit or push unless the user asks, the task explicitly includes
 release/PR/publish, or a workflow requires it.
+
+## Standing maintenance authorization (owner, 2026-09-06)
+
+Routine reversible work is already authorized on both the Air and Mini: inspect, edit and test within the requested
+scope; update installed trusted tools/packages; use existing approved credentials internally; and restart the affected
+idle service when needed to activate an update. Do not ask again for the same scope. Preserve existing macOS grants and
+stable signed application identities. Do not reset TCC or rebuild/re-sign helpers merely to refresh a permission. Before
+work, identify all missing OS authorizations together; run native installers sequentially and stop on an unexpected
+prompt. Unattended checks use the shared no-prompt flags. Ask before destructive or materially broader security access
+changes. Standing approval does not authorize blanket sudo/Keychain ACL changes, credential disclosure, unrequested
+sends/publication, or bypassing platform approval controls. If macOS still requires authentication, explain the exact
+action once and use its native gate.
 
 ## Authority And Safety
 

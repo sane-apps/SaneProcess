@@ -4,6 +4,7 @@
 require_relative '../hooks/test/test_framework'
 require 'fileutils'
 require 'open3'
+require 'pathname'
 require 'tmpdir'
 
 include TestFramework
@@ -12,6 +13,41 @@ WRAPPER = File.read(File.expand_path('capture-mini-screenshot.sh', __dir__))
 HELPER = File.read(File.expand_path('mini-screenshot-evidence-helper.sh', __dir__))
 HELPER_FILES = %w[ensure_macos_permissions.sh macos_permissions.swift macos_display_info.swift
                   macos_window_info.swift take_screenshot.py cws_sticky_window_info.swift].freeze
+SANEAPPS_ROOT = Pathname.new(__dir__).ascend.find { |path| path.basename.to_s == 'SaneApps' }
+
+def run_locked_environment_probe(wrapper_source, strip_inner_environment: false)
+  Dir.mktmpdir('mini-screenshot-env-', '/private/tmp') do |test_dir|
+    wrapper = File.join(test_dir, 'capture-mini-screenshot.sh')
+    helper = File.join(test_dir, 'mini-screenshot-evidence-helper.sh')
+    if strip_inner_environment
+      wrapper_source = wrapper_source.sub(
+        '/usr/bin/env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/private/tmp __CF_USER_TEXT_ENCODING="0x$(printf \'%X\' "$(id -u)"):0:0" /bin/bash "$LOCKED_HELPER_RUNNER"',
+        '/bin/bash "$LOCKED_HELPER_RUNNER"'
+      )
+    end
+    File.write(wrapper, wrapper_source)
+    File.write(helper, <<~'BASH')
+      #!/bin/bash
+      set -euo pipefail
+      expected="0x$(printf '%X' "$(id -u)"):0:0"
+      [ "${__CF_USER_TEXT_ENCODING:-}" = "$expected" ] || {
+        echo "locked environment missing deterministic macOS session identity" >&2
+        exit 41
+      }
+      printf 'LOCKED_ENV_OK\n'
+    BASH
+    File.chmod(0o700, wrapper)
+    File.chmod(0o700, helper)
+    env = {
+      'CWS_SCREENSHOT_EXPECTED_HELPER_SHA256' => '0' * 64,
+      'MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS' => '5',
+      'MINI_SCREENSHOT_REQUIRE_GUI_RUNNER' => nil,
+      'SSH_CONNECTION' => nil,
+      'SSH_TTY' => nil
+    }
+    Open3.capture3(env, wrapper, '--skip-cleanup', '--locked-evidence', '--preserve-frontmost', 'desktop')
+  end
+end
 
 exit(run_tests('Mini Screenshot Evidence Tests') do
   test_category('Locked evidence') do
@@ -28,6 +64,17 @@ exit(run_tests('Mini Screenshot Evidence Tests') do
       assert_includes(WRAPPER, 'MINI_SCREENSHOT_REQUIRE_GUI_RUNNER')
       assert(locked_block.index('running_in_ssh_session') < locked_block.index('REMOTE_MINI_GUI_RUN'),
              'only an SSH-owned locked run may delegate through Terminal')
+      true
+    end
+
+    test('both sanitized runner boundaries preserve the deterministic macOS session identity') do
+      stdout, stderr, status = run_locked_environment_probe(WRAPPER)
+      assert(status.success?, "inner locked environment probe failed: #{stdout}#{stderr}")
+      assert_includes(stdout, 'LOCKED_ENV_OK')
+
+      stdout, stderr, status = run_locked_environment_probe(WRAPPER, strip_inner_environment: true)
+      assert(status.success?, "outer locked environment probe failed: #{stdout}#{stderr}")
+      assert_includes(stdout, 'LOCKED_ENV_OK')
       true
     end
 
@@ -63,7 +110,7 @@ exit(run_tests('Mini Screenshot Evidence Tests') do
         source_dir = File.join(Dir.home, '.codex/skills/screenshot/scripts')
         HELPER_FILES.each do |file|
           source = if file == 'cws_sticky_window_info.swift'
-                     File.expand_path('../../../../SaneLotAuctionRelease/extension/scripts/cws_sticky_window_info.swift', __dir__)
+                     File.join(SANEAPPS_ROOT.to_s, 'SaneLotAuctionRelease', 'extension', 'scripts', file)
                    else
                      File.join(source_dir, file)
                    end

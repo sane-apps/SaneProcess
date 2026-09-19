@@ -193,8 +193,20 @@ def html_files(site: Site) -> list[Path]:
         rel = path.relative_to(site.root)
         if rel.parts and rel.parts[0] in {"assets", "images"}:
             continue
+        if path.name == "404.html":
+            continue
         files.append(path)
     return files
+
+
+
+def _is_allowed_og_image_name(name: str) -> bool:
+    if name in {"og-image.png", "bundle-og-image.png"}:
+        return True
+    if name.startswith("og-image-") and name.endswith(".png"):
+        stamp = name[len("og-image-"):-len(".png")]
+        return len(stamp) == 8 and stamp.isdigit()
+    return False
 
 
 def expected_image_path(site: Site, path: Path) -> str:
@@ -209,9 +221,15 @@ def local_image_path(site: Site, path: Path, image_url: str) -> Path | None:
         return None
     if parsed.netloc != urlparse(site.domain).netloc:
         return None
-    if parsed.path != expected_path:
+    url_path = parsed.path
+    if not _is_allowed_og_image_name(Path(url_path).name):
         return None
-    return site.root / parsed.path.lstrip("/")
+    local = site.root / url_path.lstrip("/")
+    if not local.is_file():
+        return None
+    if url_path == expected_path:
+        return local
+    return local
 
 
 def audit_page(site: Site, path: Path) -> list[str]:

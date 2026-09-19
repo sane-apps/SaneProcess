@@ -3,6 +3,7 @@
 # Primary operator client is Cursor on the Air; Grok runs Mini heartbeats.
 
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sync-control-plane.sh"
 
 MINI_HOST="mini"
 QUIET=0
@@ -68,32 +69,20 @@ LOCAL_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
 REPO_ROOT="$HOME/SaneApps/infra/SaneProcess"
 REPO_CURSOR_HOOKS="$REPO_ROOT/scripts/hooks/cursor"
 
-log "Syncing Cursor control-plane profile to $MINI_HOST..."
-
-if [[ -d "$LOCAL_AGENTS_SKILLS_DIR" ]]; then
-  rsync -az --delete "$LOCAL_AGENTS_SKILLS_DIR/" "$MINI_HOST:~/.agents/skills/" \
-    2>/dev/null || log "  ! .agents/skills rsync to mini (non-fatal if mini not reachable)"
-  log "  + .agents/skills mirrored to mini"
-fi
-
-if [[ -d "$LOCAL_CURSOR_HOOKS" ]]; then
-  ssh "$MINI_HOST" "mkdir -p ~/.cursor/hooks" 2>/dev/null || true
-  rsync -az "$LOCAL_CURSOR_HOOKS/" "$MINI_HOST:~/.cursor/hooks/" \
-    2>/dev/null || log "  ! ~/.cursor/hooks rsync to mini (non-fatal)"
-  log "  + Cursor hook adapters mirrored to mini"
-else
-  ssh "$MINI_HOST" "mkdir -p ~/.cursor/hooks" 2>/dev/null || true
-  rsync -az "$REPO_CURSOR_HOOKS/" "$MINI_HOST:~/.cursor/hooks/" \
-    2>/dev/null || log "  ! repo cursor hooks rsync to mini (non-fatal)"
-  log "  + repo Cursor hook adapters mirrored to mini (no local ~/.cursor/hooks)"
-fi
-
+sync_peer_home || die "Could not verify Mini identity"
+log "Checking Cursor control-plane files on $MINI_HOST..."
 if [[ -f "$LOCAL_CURSOR_DIR/hooks.json" ]]; then
-  rsync -az "$LOCAL_CURSOR_DIR/hooks.json" "$MINI_HOST:~/.cursor/hooks.json" \
-    2>/dev/null || log "  ! ~/.cursor/hooks.json rsync failed (non-fatal)"
-  log "  + Cursor hooks.json mirrored when present"
+  sync_preserve_profile "$REMOTE_HOME/.cursor/hooks.json"
 fi
-
+ssh "$MINI_HOST" "mkdir -p ~/.agents/skills ~/.cursor/hooks"
+if [[ -d "$LOCAL_AGENTS_SKILLS_DIR" ]]; then
+  sync_copy_missing "$LOCAL_AGENTS_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.agents/skills/"
+fi
+if [[ -d "$LOCAL_CURSOR_HOOKS" ]]; then
+  sync_copy_missing "$LOCAL_CURSOR_HOOKS/" "$MINI_HOST:$REMOTE_HOME/.cursor/hooks/"
+else
+  sync_copy_missing "$REPO_CURSOR_HOOKS/" "$MINI_HOST:$REMOTE_HOME/.cursor/hooks/"
+fi
 UNIVERSAL_SCRIPTS=(
   "scripts/SaneMaster.rb"
   "scripts/validation_report.rb"
@@ -106,12 +95,8 @@ UNIVERSAL_SCRIPTS=(
 )
 for rel in "${UNIVERSAL_SCRIPTS[@]}"; do
   if [[ -f "$REPO_ROOT/$rel" ]]; then
-    rsync -az "$REPO_ROOT/$rel" "$MINI_HOST:~/SaneApps/infra/SaneProcess/$rel" 2>/dev/null || true
+    sync_copy_missing "$REPO_ROOT/$rel" "$MINI_HOST:$REMOTE_HOME/SaneApps/infra/SaneProcess/$rel"
   fi
 done
-rsync -az "$REPO_ROOT/scripts/automation/heartbeats/" "$MINI_HOST:~/SaneApps/infra/SaneProcess/scripts/automation/heartbeats/" 2>/dev/null || true
-log "  + recurring automation scripts mirrored (best-effort)"
-
-log ""
-log "Cursor profile sync complete (best-effort mini)."
-log "Cursor Automations remain UI-owned on the controller; Mini recurring jobs use LaunchAgents (see recurring-jobs.md)."
+sync_copy_missing "$REPO_ROOT/scripts/automation/heartbeats/" "$MINI_HOST:$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/automation/heartbeats/"
+log "Cursor shared files verified; Mini profile and peer-only files preserved."

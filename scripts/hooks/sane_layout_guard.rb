@@ -24,6 +24,7 @@ require 'json'
 require 'shellwords'
 require 'socket'
 require_relative 'core/hook_payload'
+require_relative 'core/local_ui_guard'
 
 module SaneLayoutGuard
   module_function
@@ -65,6 +66,9 @@ module SaneLayoutGuard
     return format_reason('nested fake Users/ tree') if nested_users_tree?(raw)
     return format_reason('~/SaneApps/Users nested fake tree') if saneapps_users_nested?(raw)
     return format_reason('/Users/sj path on Mini (or non-Air host)') if users_sj_forbidden?(raw)
+    if (air_reason = SaneLocalUIGuard.air_app_edit_reason(raw))
+      return air_reason
+    end
     return format_reason('Desktop write outside Screenshots / LemonSqueezy-Uploads') if desktop_forbidden?(raw)
     return format_reason('SaneApps product under ~/Dev (Dev is third-party forks only)') if sane_under_dev?(raw)
 

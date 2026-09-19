@@ -599,9 +599,14 @@ exit(run_tests('CWS Review Watch Tests') do
     envelope = SaneInternalReport.render(event)
 
     assert_eq(envelope['kind'], SaneInternalReport::CWS_REVIEW_KIND)
-    assert_eq(envelope['subject'], 'Chrome Web Store changed: SaneLot Auction Pricing')
-    assert_includes(envelope['body'], 'Chrome Web Store reported a review-state transition.')
-    assert_includes(envelope['body'], 'version 1.0.9 -> 1.0.10')
+    assert_eq(envelope['subject'], 'SaneLot Auction Pricing: waiting for Chrome Web Store review')
+    assert_includes(envelope['body'], 'SaneLot Auction Pricing has a new package on the Chrome Web Store while still waiting for review.')
+    assert_includes(envelope['body'], 'Version 1.0.10 (previously 1.0.9)')
+    assert_includes(envelope['body'], 'What to do:')
+    assert_includes(envelope['body'], "You'll get another email when Chrome Web Store approves or rejects it.")
+    assert(!envelope['body'].include?('review-state transition'))
+    assert(!envelope['body'].include?('chrome_web_store_submission'))
+    assert(!envelope['body'].include?('PENDING_REVIEW'))
     assert(!envelope['body'].include?('App Store Connect reported'))
     true
   end

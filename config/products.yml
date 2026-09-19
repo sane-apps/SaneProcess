@@ -31,6 +31,8 @@ products:
   saneclip:
     name: SaneClip
     checkout_uuid: e0d71010-bd20-49b6-b841-5522b39df95f
+    # Published Default variant; a draft sibling exists on the same product.
+    lemon_variant_id: "1228215"
     license_gated: true    # Basic/Pro gating active — all release channels allowed
     domain: saneclip.com
     dist_domain: dist.saneclip.com

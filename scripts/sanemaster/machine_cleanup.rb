@@ -84,6 +84,8 @@ module SaneMasterModules
         return false
       end
 
+      return false if machine_cleanup_server_busy?(options)
+
       plan = build_machine_cleanup_plan(options)
 
       if options[:json]
@@ -93,6 +95,8 @@ module SaneMasterModules
       end
 
       return true unless options[:apply]
+
+      return false if machine_cleanup_server_busy?(options)
 
       result = apply_machine_cleanup_plan(plan, options)
       sweep_ghost_dock_tiles(options)
@@ -106,6 +110,23 @@ module SaneMasterModules
     end
 
     private
+
+    def machine_cleanup_server_busy?(options)
+      return false unless options[:server]
+
+      # Planning can take time. Re-read processes before scanning and again before apply.
+      remove_instance_variable(:@machine_cleanup_ps_rows) if instance_variable_defined?(:@machine_cleanup_ps_rows)
+      blocking = machine_cleanup_server_blocking_flags(machine_cleanup_active_inventory)
+      return false if blocking.empty?
+
+      reason = "Server cleanup skipped: active or unknown work (#{blocking.join(', ')})"
+      if options[:json]
+        puts JSON.pretty_generate(command: 'machine_cleanup', status: 'skipped', reason: reason, blocking: blocking)
+      else
+        warn reason
+      end
+      true
+    end
 
     # Ghost Dock tiles accumulate on the Mini when GUI/agent apps get
     # force-killed during build/test cleanup. Relaunching the Dock drops any

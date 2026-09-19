@@ -500,6 +500,30 @@ module SaneTrackTest
       warn "  FAIL: Hook edits should mark always-persist work, got #{handoff.inspect}"
     end
 
+
+    # Test: a later significant edit invalidates earlier persistence receipts.
+    StateManager.reset(:handoff_tracking)
+    process_result_proc.call('mcp__agentmemory__memory_save', {}, { 'success' => true })
+    process_result_proc.call('Edit', { 'file_path' => '/tmp/project/SESSION_HANDOFF.md' }, { 'success' => true })
+    process_result_proc.call('Edit', { 'file_path' => '/tmp/project/Sources/App.swift' }, { 'success' => true })
+    handoff = StateManager.get(:handoff_tracking)
+    if handoff[:memory_updated] == false && handoff[:handoff_updated] == false && handoff[:last_significant_at]
+      passed += 1
+      warn '  PASS: Later significant edit creates fresh persistence debt'
+    else
+      failed += 1
+      warn "  FAIL: Later significant edit should invalidate old checkpoints, got #{handoff.inspect}"
+    end
+
+    checkpoint = ContextCompact.persistence_checkpoint
+    if checkpoint&.include?('SESSION_HANDOFF.md') && checkpoint.include?('AgentMemory or Serena')
+      passed += 1
+      warn '  PASS: Compaction checkpoint surfaces both stale persistence lanes'
+    else
+      failed += 1
+      warn "  FAIL: Compaction checkpoint should name missing persistence, got #{checkpoint.inspect}"
+    end
+
     # Test: Durable doc edit marks always-persist work
     StateManager.reset(:handoff_tracking)
     process_result_proc.call('Edit', { 'file_path' => '/tmp/project/AGENTS.md' }, { 'success' => true })

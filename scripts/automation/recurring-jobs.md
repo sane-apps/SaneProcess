@@ -37,6 +37,8 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb sync_control_plane
 | App + CWS review watch | Every 15 min | `run-app-review-watch.sh` | Codex `saneapps-app-review-watch` |
 | SaneLot X scout | Daily 10:00 | Grok `sanelot-x-opportunity-scout` | Codex same id; paid X API scout stays disabled |
 | SaneLot email campaign | Daily 08:15 and 16:30 through 2026-10-05 | Grok `sanelot-email-campaign` | Missing Cursor canary timers; Mini heartbeat is the sender. Grokbot is the owner-facing partner via `outputs/sanelot-resend-outreach-2026-08-21/GROKBOT.md`. Plist may exist unloaded; do not reload it as a side effect of Hosts work (40-cap dealer dump). |
+| SaneClip email campaign | Weekdays 08:25 ET | LaunchAgent + `run-saneclip-email-campaign.sh` | E2/E3 only (`drip_morning.py`). Cap 50. First E2 **2026-09-08** 10:50 ET. No E1 remount. |
+| SaneClick email campaign | Weekdays 08:30 ET | LaunchAgent + `run-saneclick-email-campaign.sh` | E2/E3 only (`drip_morning.py`). Cap 50. First E2 **2026-09-09** 11:15 ET. No E1 remount. |
 | SaneHosts email campaign | Weekdays 08:20 ET, 2026-09-01 through 2026-11-24 | LaunchAgent + `run-sanehosts-email-campaign.sh` | Direct Python. **50** new Email 1 / weekday plus automatic Email 2/3. Tops up a short day instead of skipping. Own job — does not ride the Lot Grok heartbeat. |
 | SaneApps launch ops | Daily 08:30 | Grok `saneapps-launch-ops` | Codex `saneapps-launch-ops` |
 | Prophecy batch resume | Daily 20:20 | Grok `prophecy-ledger-transcript-batch-resume` | Codex same id |

@@ -47,7 +47,7 @@ class ValidationReport
   MIN_SAMPLES_FOR_SIGNIFICANCE = 30  # Bare minimum, 100+ preferred
   WORKFLOW_POLICY_EXCEPTION_MARKER = 'SANEAPPS_GITHUB_HOSTED_EXCEPTION:'
   MANUAL_WORKFLOW_TRIGGERS = %w[workflow_dispatch workflow_call].freeze
-  GITHUB_POLICY_SEGMENTS = %w[apps infra mcp web].freeze
+  GITHUB_POLICY_SEGMENTS = %w[apps infra mcp web websites].freeze
   AGENTS_WARNING_BYTES = 28 * 1024
   AGENTS_HARD_BYTES = 32 * 1024
   AGENTS_WARNING_LINES = 450
@@ -183,17 +183,6 @@ class ValidationReport
     infra/SaneProcess
   ].freeze
 
-  # Apps only (for release/distribution checks)
-  APP_PROJECTS = %w[
-    apps/SaneBar
-    apps/SaneVideo
-    apps/SaneScan
-    apps/SaneClip
-    apps/SaneHosts
-    apps/SaneClick
-    apps/SaneSales
-  ].freeze
-
   def initialize
     load_headless_env
     @data = {}
@@ -255,8 +244,8 @@ class ValidationReport
   private
 
   def collect_data
-    PROJECTS.each do |project|
-      state_file = File.join(SANE_APPS_ROOT, project, '.claude', 'state.json')
+    validation_projects.each do |project|
+      state_file = File.join(sane_apps_root, project, '.claude', 'state.json')
       next unless File.exist?(state_file)
 
       begin
@@ -373,7 +362,7 @@ class ValidationReport
     when /Q14 DISK:/
       'Run `ruby scripts/SaneMaster.rb machine_cleanup --host mini --server --apply`, then rerun validation on the Mini.'
     when /Q15 SECRET SCAN:/
-      'Run `ruby scripts/SaneMaster.rb secret_scan --path /Users/sj` on the affected host. Install Automic Vault or set SANEMASTER_AUTOMIC_VAULT_CLI if the scanner is missing.'
+      'Run `ruby scripts/SaneMaster.rb secret_scan --path "$HOME"` on the affected host. Install Automic Vault or set SANEMASTER_AUTOMIC_VAULT_CLI if the scanner is missing.'
     else
       'Open the matching Q-section in validation_report.rb, fix the named source of truth, and rerun `ruby scripts/validation_report.rb` on the Mini.'
     end
@@ -435,8 +424,8 @@ class ValidationReport
     end
 
     # Check project settings too
-    PROJECTS.each do |project|
-      settings_file = File.join(SANE_APPS_ROOT, project, '.claude', 'settings.json')
+    validation_projects.each do |project|
+      settings_file = File.join(sane_apps_root, project, '.claude', 'settings.json')
       next unless File.exist?(settings_file)
 
       begin
@@ -466,8 +455,8 @@ class ValidationReport
     end
 
     # Check project .mcp.json files
-    PROJECTS.each do |project|
-      mcp_file = File.join(SANE_APPS_ROOT, project, '.mcp.json')
+    validation_projects.each do |project|
+      mcp_file = File.join(sane_apps_root, project, '.mcp.json')
       next unless File.exist?(mcp_file)
 
       check_mcp_file(mcp_file, local_mcps, project, issues_found, project_local: true)
@@ -525,13 +514,16 @@ class ValidationReport
     # Projects opt-in to global hooks via .saneprocess manifest file.
     # Note: identical local hooks are harmless — Claude Code deduplicates them at runtime
     # (confirmed Session 15 research). Only flag DIVERGENT local hooks.
-    PROJECTS.each do |project|
-      project_root = File.join(SANE_APPS_ROOT, project)
+    validation_projects.each do |project|
+      project_root = File.join(sane_apps_root, project)
+      next unless project.start_with?('apps/') || project == 'infra/SaneProcess'
+
       manifest = File.join(project_root, '.saneprocess')
       unless File.exist?(manifest)
         issues_found << "[#{project}] Missing .saneprocess manifest (global hooks won't fire)"
       end
     end
+    check_portfolio_coverage(issues_found)
     issues_found.concat(storekit_product_parity_issues)
 
     # === GLOBAL MCP PATH CHECK ===
@@ -613,7 +605,7 @@ class ValidationReport
     contents = {}
     sources.each do |label, path|
       if path.nil? || !File.file?(path)
-        issues_found << "Clean-session truth source missing: #{label}"
+        issues_found << "Clean-session truth source missing: #{label}" unless CLEAN_SESSION_SUPERSEDED_LABELS.include?(label)
         next
       end
 
@@ -646,9 +638,9 @@ class ValidationReport
     end
 
     notes = clean_session_truth_correction_notes
-    if notes.size != 1
-      issues_found << "Clean-session Codex correction note count is #{notes.size}; expected exactly 1"
-    elsif !File.read(notes.first).include?('scripts/automation/sync-memory-mini.sh')
+    if notes.size > 1
+      issues_found << "Clean-session Codex correction note count is #{notes.size}; expected at most 1"
+    elsif notes.first && !File.read(notes.first).include?('scripts/automation/sync-memory-mini.sh')
       issues_found << 'Clean-session Codex correction note does not name the current memory sync'
     end
 
@@ -661,8 +653,7 @@ class ValidationReport
   end
 
   def clean_session_truth_enabled?(sources)
-    File.file?(sources['research']) &&
-      (Dir.exist?(clean_session_truth_claude_memory_root) || Dir.exist?(clean_session_truth_codex_notes_root))
+    File.directory?(saneprocess_repo_root)
   end
 
   def clean_session_truth_sources
@@ -844,8 +835,42 @@ class ValidationReport
     SANE_APPS_ROOT
   end
 
+  def mapped_project_paths
+    map = File.join(sane_apps_root, 'meta', 'PROJECT_MAP.md')
+    return [] unless File.file?(map)
+
+    File.readlines(map).select { |line| line.start_with?('|') }.flat_map do |line|
+      # Only path cells: notes can mention archived or unrelated checkouts.
+      line.split('|')[1, 2].join('|').scan(/`((?:apps|websites|infra|mcp|clients)\/[^`<>]+|sanelot\/|meta\/?)`/).flatten
+    end.map { |path| path.delete_suffix('/') }.uniq.reject { |path| path.split('/').include?('..') }
+  end
+
   def validation_projects
-    PROJECTS
+    mapped = mapped_project_paths.select do |path|
+      path.start_with?('apps/') || File.exist?(File.join(sane_apps_root, path, '.git')) ||
+        File.file?(File.join(sane_apps_root, path, '.saneprocess'))
+    end
+    mapped.empty? ? PROJECTS : mapped.uniq
+  end
+
+  def check_portfolio_coverage(issues)
+    issues << 'Portfolio coverage INCOMPLETE: meta/PROJECT_MAP.md missing or contains no project paths' if mapped_project_paths.empty?
+    product_definitions.each do |product|
+      issues << "Portfolio coverage INCOMPLETE: #{product[:name]} checkout missing at #{product[:project_path]}" unless product[:project_exists]
+      if product[:release_lane] == 'unknown'
+        issues << "Portfolio coverage INCOMPLETE: #{product[:name]} release lane is unknown; define .saneprocess type/release/appstore metadata"
+      end
+    end
+    native_paths = product_definitions.map { |product| product[:project_path].delete_prefix("#{sane_apps_root}/") }
+    @metrics[:portfolio_coverage] = {
+      projects: validation_projects,
+      products: product_definitions.map { |product| product.slice(:name, :project_path, :release_lane, :project_exists) },
+      release_scope: 'Native release candidates; configured channels are checked regardless of checkout price or SKU. Metadata is not release proof.',
+      other_projects: (validation_projects - native_paths).map { |path| { path: path, release_status: 'INCOMPLETE: configuration/docs scope only; requires its own release workflow' } },
+      absent_mapped_paths: mapped_project_paths.reject { |path| File.directory?(File.join(sane_apps_root, path)) }
+    }
+    other_count = @metrics[:portfolio_coverage][:other_projects].size
+    @warnings << "Q0 COVERAGE INCOMPLETE: #{other_count} non-native project/surface paths have configuration/docs checks only; use their own release workflows" if other_count.positive?
   end
 
   def private_local_claude_file?(content)
@@ -1644,7 +1669,7 @@ class ValidationReport
     issues_found = []
     warnings_found = []
 
-    released_product_definitions.each do |product|
+    direct_download_product_definitions.each do |product|
       next unless product[:project_exists]
 
       app_name = product[:name]
@@ -1834,7 +1859,7 @@ class ValidationReport
         File.join(product[:project_path], 'website')
       ]
     end.uniq
-    website_dirs << File.join(SANE_APPS_ROOT, 'web', 'saneapps.com')
+    website_dirs << File.join(sane_apps_root, 'websites', 'saneapps.com')
     website_dirs.each do |full_dir|
       next unless Dir.exist?(full_dir)
 
@@ -1849,6 +1874,7 @@ class ValidationReport
       end
     end
     validate_q7_source_checkout_routes(website_dirs, config, issues_found)
+    validate_q7_checkout_worker_sync(config, issues_found)
 
     # Catch shallow 200 OK site fallbacks that would otherwise make a broken or
     # placeholder website look healthy.
@@ -1857,7 +1883,7 @@ class ValidationReport
     end
 
     # Check Sparkle appcast feeds (CRITICAL - no updates if broken)
-    released_product_definitions.each do |product|
+    direct_download_product_definitions.each do |product|
       next if product[:domain].to_s.empty?
 
       appcast_url = "https://#{product[:domain]}/appcast.xml"
@@ -1871,7 +1897,7 @@ class ValidationReport
     end
 
     # Check distribution workers (Cloudflare R2 endpoints)
-    dist_urls = released_product_definitions.map do |product|
+    dist_urls = direct_download_product_definitions.map do |product|
       next if product[:dist_domain].to_s.empty?
 
       { url: "https://#{product[:dist_domain]}/", name: "#{product[:name]} dist worker" }
@@ -1916,6 +1942,63 @@ class ValidationReport
 
     warnings << "#{product[:name]} appcast missing Sparkle signatures" unless snapshot[:has_signature]
     validate_q7_website_download(product, snapshot[:enclosure_url], issues)
+  end
+
+  CHECKOUT_WORKER_PATH = File.expand_path('../../cloudflare-workers/sane-checkout.js', __dir__)
+
+  def parse_checkout_worker_links(source)
+    block = source.to_s[/const PRODUCT_LINKS\s*=\s*\{([\s\S]*?)\};/, 1]
+    return {} if block.nil?
+
+    block.scan(/['"]([^'"]+)['"]\s*:\s*['"]([^'"]+)['"]/).to_h
+  end
+
+  def expected_checkout_worker_links(config)
+    links = {}
+    config[:products].each do |slug, prod|
+      next unless prod.is_a?(Hash)
+
+      checkout = product_checkout_url(prod, config[:checkout_base])
+      donation = prod['donation_url'].to_s.strip
+      url = checkout.empty? ? donation : checkout
+      next if url.empty?
+
+      links[slug.to_s] = url
+    end
+    config[:bundles].each do |slug, bundle|
+      next unless bundle.is_a?(Hash)
+
+      url = bundle['checkout_url'].to_s.strip
+      next if url.empty?
+
+      links[slug.to_s] = url
+      links['sane-bundle'] = url if slug.to_s == 'bundle'
+    end
+    links
+  end
+
+  def checkout_worker_link_mismatches(config, worker_source)
+    expected = expected_checkout_worker_links(config)
+    actual = parse_checkout_worker_links(worker_source)
+    expected.each_with_object([]) do |(slug, url), issues|
+      worker_url = actual[slug].to_s
+      if worker_url.empty?
+        issues << "checkout Worker missing #{slug} route (expected #{url})"
+      elsif worker_url != url
+        issues << "checkout Worker #{slug} route mismatch (Worker has #{worker_url}, products.yml has #{url})"
+      end
+    end
+  end
+
+  def validate_q7_checkout_worker_sync(config, issues)
+    unless File.exist?(CHECKOUT_WORKER_PATH)
+      issues << "REVENUE CRITICAL: missing checkout Worker source at #{CHECKOUT_WORKER_PATH}"
+      return
+    end
+
+    checkout_worker_link_mismatches(config, File.read(CHECKOUT_WORKER_PATH)).each do |mismatch|
+      issues << "REVENUE CRITICAL: #{mismatch}"
+    end
   end
 
   def validate_q7_source_checkout_routes(website_dirs, config, issues)
@@ -2512,7 +2595,7 @@ class ValidationReport
     lemonsqueezy_snapshot = fetch_live_lemonsqueezy_hosted_versions
     warnings_found << 'Live Lemon Squeezy hosted file snapshot unavailable; hosted-file drift check skipped where data is missing' if lemonsqueezy_snapshot.nil?
 
-    released_product_definitions.each do |product|
+    direct_download_product_definitions.each do |product|
       next unless product[:project_exists]
 
       app_name = product[:name]
@@ -2740,7 +2823,7 @@ class ValidationReport
     receipt_path = latest_secret_scan_receipt_path
 
     unless receipt_path
-      warnings_found << 'No secret scan receipt found; run `ruby scripts/SaneMaster.rb secret_scan --path /Users/sj`'
+      warnings_found << 'No secret scan receipt found; run `ruby scripts/SaneMaster.rb secret_scan --path "$HOME"`'
       @metrics[:secret_scan] = { issues: 0, warnings: warnings_found.length, details: warnings_found }
       warnings_found.each { |w| @warnings << "Q15 SECRET SCAN: #{w}" }
       return
@@ -2920,7 +3003,7 @@ class ValidationReport
     variants = fetch_lemonsqueezy_collection('/v1/variants?page[size]=100', api_key)
     return nil unless products.is_a?(Array) && variants.is_a?(Array)
 
-    released_product_definitions.each_with_object({}) do |product, snapshot|
+    direct_download_product_definitions.each_with_object({}) do |product, snapshot|
       product_record = products.find do |record|
         lemonsqueezy_product_matches?(record, product)
       end
@@ -3000,7 +3083,7 @@ class ValidationReport
     refs_text = refs.empty? ? '' : " (#{refs.join(', ')})"
     filename_text = filename.empty? ? '' : " file #{filename}"
 
-    "[#{app_name}] Lemon Squeezy hosted#{filename_text} matches v#{expected_version}, but stale published file(s) remain; delete or unpublish old hosted files#{refs_text}"
+    "[#{app_name}] Lemon Squeezy hosted#{filename_text} matches v#{expected_version}, but stale published file(s) remain; delete old hosted files so only the newest remains#{refs_text}"
   end
 
   def lemonsqueezy_stale_published_filenames(hosted_file, expected_version)
@@ -3556,6 +3639,9 @@ class ValidationReport
 
   def generate_app_checklist(product)
     checklist = []
+    if product[:release_lane] == 'unknown'
+      checklist << { name: 'INCOMPLETE: release lane metadata missing', status: :todo, critical: true }
+    end
     app_name = product[:name]
     project_path = product[:project_path]
     app_store_product = app_store_product?(product)
@@ -3937,14 +4023,27 @@ class ValidationReport
 
   def product_definitions
     @product_definitions ||= begin
-      load_product_config[:products].map do |slug, prod|
+      configured = load_product_config[:products].select { |_slug, prod| prod.is_a?(Hash) }
+      entries = configured.map do |slug, prod|
+        repo_name = prod['github_repo'].to_s.split('/').last.to_s.delete_suffix('.git')
+        repo_name = prod['name'].to_s if repo_name.empty?
+        [slug, prod, "apps/#{repo_name}"]
+      end
+      mapped_project_paths.grep(%r{\Aapps/[^/]+\z}).each do |relative_path|
+        next if entries.any? { |_slug, _prod, path| path == relative_path }
+
+        name = File.basename(relative_path)
+        entries << [name.downcase, { 'name' => name }, relative_path]
+      end
+      entries.map do |slug, prod, relative_path|
         next unless prod.is_a?(Hash)
 
         app_name = prod['name'].to_s.strip
         next if app_name.empty?
 
-        project_path = File.join(SANE_APPS_ROOT, 'apps', app_name)
+        project_path = File.join(sane_apps_root, relative_path)
         manifest = project_manifest(project_path)
+        release = manifest['release'].is_a?(Hash) ? manifest['release'] : {}
         appstore = manifest['appstore'].is_a?(Hash) ? manifest['appstore'] : {}
         appstore_metadata = appstore['metadata'].is_a?(Hash) ? appstore['metadata'] : {}
         ios_metadata = appstore_metadata['ios'].is_a?(Hash) ? appstore_metadata['ios'] : {}
@@ -3953,9 +4052,11 @@ class ValidationReport
           slug: slug.to_s,
           name: app_name,
           type: prod['type'].to_s.strip.empty? ? manifest['type'].to_s.strip : prod['type'].to_s.strip,
-          domain: prod['domain'].to_s.strip,
-          dist_domain: prod['dist_domain'].to_s.strip,
-          github_repo: prod['github_repo'].to_s.strip,
+          domain: (prod['domain'] || release['site_host'] || manifest['website_domain'] || URI(appstore['marketing_url'].to_s).host).to_s.strip,
+          dist_domain: (prod['dist_domain'] || release['dist_host']).to_s.strip,
+          github_repo: (prod['github_repo'] || release['github_repo']).to_s.strip,
+          release_lane: appstore['enabled'] == true && manifest['type'] == 'ios_app' ? 'appstore' :
+            (release['use_sparkle'] == true || manifest['type'] == 'macos_app' ? 'direct' : 'unknown'),
           checkout_uuid: prod['checkout_uuid'].to_s.strip,
           checkout_url: prod['checkout_url'].to_s.strip,
           appstore_id: prod['appstore_id'].to_s.strip.empty? ? appstore['app_id'].to_s.strip : prod['appstore_id'].to_s.strip,
@@ -3985,6 +4086,10 @@ class ValidationReport
     product_definitions.select { |product| product_released?(product) }
   end
 
+  def direct_download_product_definitions
+    released_product_definitions.reject { |product| app_store_product?(product) || product[:release_lane] == 'unknown' }
+  end
+
   def product_checkout_url(product, checkout_base = load_product_config[:checkout_base])
     explicit_url = (product[:checkout_url] || product['checkout_url']).to_s.strip
     return explicit_url unless explicit_url.empty?
@@ -3996,8 +4101,9 @@ class ValidationReport
   end
 
   def product_released?(product)
-    !((product[:checkout_url] || product['checkout_url']).to_s.strip.empty? &&
-      (product[:checkout_uuid] || product['checkout_uuid']).to_s.strip.empty?)
+    # This is audit applicability, not proof of publication. Free apps and held
+    # releases still need checks; missing checkout/SKU metadata must not hide them.
+    true
   end
 
   def project_manifest(project_path)

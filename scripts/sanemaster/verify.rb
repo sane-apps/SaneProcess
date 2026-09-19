@@ -189,7 +189,7 @@ module SaneMasterModules
           else
             puts "\n❌ Tests failed. Running diagnostics..."
             puts "⚠️  Test run timed out after #{timeout}s" if result[:timeout]
-            diagnose(nil, dump: true, since: test_start_time)
+            diagnose(result[:xcresult_path], dump: true, since: test_start_time, log_path: result[:log_path])
           end
           if state[:consecutive_failures].to_i >= 2
             puts ''
@@ -447,23 +447,21 @@ module SaneMasterModules
 
       pids = raw.split
       pids.select do |pid|
-        command = process_command_for_pid(pid)
-        next false unless command
-
-        command.downcase.include?(project_name.downcase) || project_related_test_process?(command)
+        project_related_test_process?(pid)
       end
     end
 
-    def project_related_test_process?(command)
-      return false unless command
+    def project_related_test_process?(pid)
+      # Arguments can mention test tools (notably log stream predicates).
+      # Check the OS-reported executable before considering project ownership.
+      executable = %x(ps -p #{pid.to_i} -o comm= 2>/dev/null).strip
+      return false unless %w[xcodebuild xctest swift-testing testmanagerd].include?(File.basename(executable))
+
+      command = process_command_for_pid(pid)
+      return false if command.nil? || command.empty?
 
       text = command.downcase
-      tool_marker = text.include?('xcodebuild') ||
-                    text.include?('xctest') ||
-                    text.include?('swift-testing') ||
-                    text.include?('testmanager')
-
-      tool_marker && project_process_matchers.any? { |matcher| text.include?(matcher) }
+      project_process_matchers.any? { |matcher| text.include?(matcher) }
     end
 
     def test_listeners_for_port(port)
@@ -474,8 +472,7 @@ module SaneMasterModules
       return [] if pids.empty?
 
       pids.select do |pid|
-        command = process_command_for_pid(pid)
-        command && project_related_test_process?(command)
+        project_related_test_process?(pid)
       end
     end
 

@@ -9,7 +9,7 @@ GUARD = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/sane_layout
 require GUARD
 
 payload = begin
-  JSON.parse($stdin.read.to_s)
+  JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
 rescue JSON::ParserError
   {}
 end

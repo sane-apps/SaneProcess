@@ -152,6 +152,18 @@ exit 0 unless SaneHookPayload.shell?(tool_name) || (tool_name.empty? && !parsed[
 command = parsed['command']
 exit 0 if command.empty?
 
+if (reason = SaneLocalUIGuard.pasteboard_reason(command))
+  warn '🔴 BLOCKED: Controller pasteboard / Universal Clipboard'
+  warn "   #{reason}"
+  exit 2
+end
+
+if (reason = SaneLocalUIGuard.air_local_gui_reason(command))
+  warn '🔴 BLOCKED: Local MacBook UI control'
+  warn "   #{reason}"
+  exit 2
+end
+
 if command.match?(LOCAL_DASHBOARD_OPEN_PATTERN) &&
    running_on_macbook_air? &&
    ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] != LOCAL_UI_APPROVAL &&
@@ -191,13 +203,13 @@ if raw_app_build_test_command?(command)
   exit 2
 end
 
-# Block 1: Direct binary execution (breaks TCC)
+# Block 1: Direct binary execution bypasses the managed runtime lifecycle
 if command.match?(%r{Contents/MacOS/(#{SANE_APP_PATTERN})})
   warn '🔴 BLOCKED: Direct binary execution of SaneApp'
-  warn '   Running the binary directly breaks TCC permission grants.'
+  warn '   Direct execution bypasses the canonical build, launch, and runtime receipts.'
   warn ''
   warn '   ✅ Use instead: ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb <AppName>'
-  warn '   This resets TCC, builds fresh, deploys to mini, and launches via `open`.'
+  warn '   This rebuilds when needed, deploys to Mini, and launches with runtime logs.'
   exit 2
 end
 
@@ -205,10 +217,10 @@ end
 # Matches: open ~/Applications/SaneBar.app, open /tmp/SaneClip.app, ssh mini 'open ...'
 if command.match?(/open\s+.*\b(#{SANE_APP_PATTERN})\.app\b/)
   warn '🔴 BLOCKED: Manual launch of SaneApp'
-  warn '   Launching without TCC reset causes stale permissions.'
+  warn '   Manual launch bypasses stale-build checks and tracked runtime verification.'
   warn ''
   warn '   ✅ Use instead: ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb <AppName>'
-  warn '   Handles: kill → clean → TCC reset → build → deploy → launch → logs'
+  warn '   Preserves existing permissions; TCC repair requires an explicit repair option.'
   exit 2
 end
 

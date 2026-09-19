@@ -57,6 +57,7 @@ path_size_mb() {
 }
 
 is_server_work_active() {
+  pgrep -f "^/Applications/(Codex|ChatGPT)\.app/Contents/MacOS/" >/dev/null 2>&1 || \
   pgrep -f "mini-nightly.sh" >/dev/null 2>&1 || \
     pgrep -f "xcodebuild .*Sane" >/dev/null 2>&1 || \
     pgrep -f "swift (build|test)" >/dev/null 2>&1 || \
@@ -424,6 +425,11 @@ run_sanemaster_server_cleanup() {
 }
 
 main() {
+  if is_server_work_active; then
+    log "mini-memory-guard skipped: active work"
+    return 0
+  fi
+
   local load1 swap_mb free_pct uptime_days disk_free_gb
   load1="$(get_load1)"
   swap_mb="$(get_swap_used_mb)"

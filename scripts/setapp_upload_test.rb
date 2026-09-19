@@ -113,6 +113,18 @@ def zip_wrapped_app(app_root, zip_path)
   end
 end
 
+# Resolve the Xcode MacOSX SDK for fixture compiles. Bare clang defaults to
+# the CommandLineTools SDK, which may be newer than the linker understands
+# (tapi "unknown architecture" failures) — pin the Xcode SDK so the fixture
+# build does not depend on the machine's default sysroot.
+def xcode_macos_sdk
+  developer_dir = Open3.capture2('xcode-select', '-p')[0].to_s.strip
+  sdk = File.join(developer_dir, 'Platforms', 'MacOSX.platform', 'Developer', 'SDKs', 'MacOSX.sdk')
+  return sdk if Dir.exist?(sdk)
+
+  abort 'Xcode MacOSX SDK not found; install Xcode to compile the residue fixture'
+end
+
 def zip_app_without_root_icon(app_root, zip_path)
   output, status = Open3.capture2e(
     'ditto',
@@ -999,6 +1011,7 @@ exit(run_tests('Setapp Upload Tests') do
           int main(void) { return residue[0] == 0 ? 1 : 0; }
         C
         compile_output, compile_status = Open3.capture2e(
+          { 'SDKROOT' => xcode_macos_sdk },
           'clang', '-arch', 'arm64', '-arch', 'x86_64', '-o', exe_path, source_path
         )
         assert(compile_status.success?, compile_output)

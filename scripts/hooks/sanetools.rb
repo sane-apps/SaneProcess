@@ -122,7 +122,7 @@ BASH_FILE_WRITE_PATTERN = Regexp.union(
   # (so redirecting an inline script to a non-/tmp path is still blocked).
 ).freeze
 
-EDIT_KEYWORDS = %w[edit write create modify change update add remove delete fix patch].freeze
+EDIT_KEYWORDS = %w[edit write create modify change update add remove delete fix patch generate produce implement build rebuild scaffold migrate translate].freeze
 
 # === RESEARCH CATEGORIES ===
 # High-value categories for SaneApps' actual work (native macOS Swift: Apple
@@ -330,6 +330,7 @@ def detect_rule_from_reason(reason)
   when /TABLE BLOCKED/i then 'no_tables'
   when /BASH.*WRITE|STATE.*BYPASS/i then 'bypass_attempt'
   when /SUBAGENT.*BLOCKED/i then 'subagent_bypass'
+  when /BRIEF INCOMPLETE/i then 'brief_incomplete'
   when /MUTATION.*BLOCKED/i then 'mutation_blocked'
   when /REQUIREMENTS NOT MET/i then 'requirements'
   when /SANELOOP REQUIRED/i then 'saneloop_required'
@@ -524,6 +525,13 @@ def process_tool(tool_name, tool_input)
 
   # Check subagent bypass
   if (reason = SaneToolsChecks.check_subagent_bypass(tool_name, tool_input, EDIT_KEYWORDS, RESEARCH_CATEGORIES))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  # Check subagent brief completeness
+  if (reason = SaneToolsChecks.check_brief_completeness(tool_name, tool_input, EDIT_KEYWORDS))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2

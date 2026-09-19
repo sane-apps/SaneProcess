@@ -85,7 +85,7 @@ exit(run_tests('Mini Access Tests') do
     test('falls back to authenticated Tailscale') do
       _out, err, status, log = run_proxy(lan: false, tailscale: true)
       assert(status.success?, err)
-      assert_includes(log, 'tailscale ping -c 1 --timeout=3s stephans-mac-mini')
+      assert_includes(log, 'tailscale ping -c 1 --timeout=5s stephans-mac-mini')
       assert_includes(log, 'tailscale nc stephans-mac-mini 22')
       true
     end

@@ -57,6 +57,9 @@ module SaneMasterModules
       from_version = config['from_version'].to_s.strip
       abort 'release.upgrade_path_test.from_version is required.' if from_version.empty?
 
+      unsigned_tests = config.fetch('unsigned_tests', false)
+      abort 'release.upgrade_path_test.unsigned_tests must be true or false.' unless [true, false].include?(unsigned_tests)
+
       timeout_seconds = Integer(config.fetch('timeout_seconds', 900))
       abort 'release.upgrade_path_test.timeout_seconds must be positive.' unless timeout_seconds.positive?
 
@@ -85,7 +88,8 @@ module SaneMasterModules
         package_path: package_path,
         test_plan: test_plan,
         test_selector: test_selector,
-        timeout_seconds: timeout_seconds
+        timeout_seconds: timeout_seconds,
+        unsigned: unsigned_tests
       )
       status = upgrade_path_spawn(
         argv,
@@ -255,10 +259,11 @@ module SaneMasterModules
 
     private
 
-    def upgrade_path_runner_argv(scheme:, package_path: nil, test_plan: nil, test_selector:, timeout_seconds:)
+    def upgrade_path_runner_argv(scheme:, package_path: nil, test_plan: nil, test_selector:, timeout_seconds:, unsigned: false)
       runner = File.realpath(File.join(__dir__, '..', 'SaneMaster.rb'))
       ruby = File.realpath(RbConfig.ruby)
       argv = [ruby, runner, 'monitor_tests', '--scheme', scheme]
+      argv << '--unsigned' if unsigned
       argv += ['--package-path', package_path] if package_path
       argv += ['--test-plan', test_plan] if test_plan
       argv + ['--test', test_selector, '--timeout', timeout_seconds.to_s]

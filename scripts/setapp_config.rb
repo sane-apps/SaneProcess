@@ -45,8 +45,14 @@ module SetappConfig
   end
 
   def portal_targets(root: saneapps_root)
+    seen_ids = {}
     apps(root: root).each_with_object({}) do |app, targets|
-      targets[app.fetch(:app_id)] = {
+      app_id = app.fetch(:app_id)
+      if seen_ids.key?(app_id.to_s)
+        abort "Duplicate Setapp app id #{app_id}: #{seen_ids[app_id.to_s]} and #{app.fetch(:app_root)} claim it; enable setapp in only one .saneprocess manifest"
+      end
+      seen_ids[app_id.to_s] = app.fetch(:app_root)
+      targets[app_id] = {
         app_name: app.fetch(:name),
         app_root: app.fetch(:app_root),
         bundle_id: app.fetch(:bundle_id),

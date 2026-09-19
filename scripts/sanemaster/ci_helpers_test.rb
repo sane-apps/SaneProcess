@@ -68,6 +68,19 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
   started_at = Time.utc(2026, 7, 11, 21, 30, 45, 123_456)
 
   test_category('Monitor test CLI options') do
+    test('unsigned unit tests are explicit and leave signed defaults unchanged') do
+      assert_eq(subject.monitor_options(['--unsigned'])[:unsigned], true)
+      assert(!subject.monitor_options([]).key?(:unsigned))
+      Dir.mktmpdir do |root|
+        params = { root: root, scheme: 'Example', test_selector: 'ExampleTests/Upgrade', started_at: started_at }
+        signed = subject.monitor_plan(**params)
+        unsigned = subject.monitor_plan(**params, unsigned: true)
+        assert(!signed[:command].include?('CODE_SIGNING_ALLOWED=NO'))
+        assert(unsigned[:command].include?('CODE_SIGNING_ALLOWED=NO'))
+        assert(unsigned[:command].include?('PROVISIONING_PROFILE_SPECIFIER='))
+      end
+    end
+
     test('parses strict named options and preserves safe defaults') do
       explicit = subject.monitor_options(
         ['--scheme', 'SaneVideo', '--package-path', 'Feature', '--test-plan', 'Release', '--test=SaneVideoTests/PlaybackTests/testPlay', '--timeout', '120']

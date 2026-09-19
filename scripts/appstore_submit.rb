@@ -195,7 +195,7 @@ ACCESSIBILITY_FAMILIES_BY_PLATFORM = {
   'IOS' => %w[IPHONE IPAD APPLE_TV APPLE_WATCH VISION]
 }.freeze
 
-IAP_DEFAULT_USD_PRICE = '6.99'
+IAP_DEFAULT_USD_PRICE = '14.99'
 IAP_DEFAULT_REVIEW_NOTE = 'One-time Pro unlock. Purchase unlocks advanced features immediately.'
 IAP_LOCALIZATION_NAME_MAX = 30
 IAP_LOCALIZATION_DESCRIPTION_MAX = 45
@@ -3012,6 +3012,9 @@ def resolve_iap_price_usd(config, options)
   explicit = options[:iap_price_usd].to_s.strip
   return explicit unless explicit.empty?
 
+  nested = config.dig('appstore', 'iap', 'price_usd').to_s.strip
+  return nested unless nested.empty?
+
   configured = config.dig('appstore', 'iap_price_usd').to_s.strip
   return configured unless configured.empty?
 
@@ -4966,7 +4969,7 @@ OptionParser.new do |opts|
   opts.on('--skip-screenshots', 'Skip screenshot upload; use screenshots already present in ASC') { options[:skip_screenshots] = true }
   opts.on('--screenshots-only', 'Upload screenshots to an existing ASC version (no upload, no build attach, no submission)') { options[:screenshots_only] = true }
   opts.on('--iap-only', 'Ensure configured IAP or explicit no-IAP policy is ready and exit') { options[:iap_only] = true }
-  opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 6.99)') { |v| options[:iap_price_usd] = v }
+  opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 14.99; also reads appstore.iap.price_usd)') { |v| options[:iap_price_usd] = v }
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--repair-version-state', 'Attempt ASC lane repair before version-state preflight') { options[:repair_version_state] = true }
   opts.on('--withdraw-version VERSION', 'Withdraw an existing ASC app version lane (clears submission + linked review submission)') { |v| options[:withdraw_version] = v }

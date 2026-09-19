@@ -64,6 +64,48 @@ def process_row(pid:, ppid: 1, command:, executable: nil)
 end
 
 exit(run_tests('SaneMaster Machine Cleanup Process Tests') do
+  test_category('whole server run safety') do
+    test('refuses active or unknown work before planning or applying anything') do
+      subjects = [
+        MachineCleanupProcessHarness.new(ps_rows: [process_row(pid: 10, command: 'ruby /tools/SaneMaster.rb launch --release')]),
+        MachineCleanupProcessHarness.new(ps_rows: [process_row(pid: 12, command: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT')]),
+        FailedProcessScanHarness.new
+      ]
+      subjects.each do |subject|
+        subject.define_singleton_method(:running_on_mini_host?) { true }
+        subject.define_singleton_method(:build_machine_cleanup_plan) { |_| raise 'filesystem planning must not run' }
+        subject.define_singleton_method(:apply_machine_cleanup_plan) { |*| raise 'apply must not run' }
+        assert_eq(subject.machine_cleanup(%w[--server --apply --json]), false)
+      end
+    end
+
+    test('rechecks active work after planning and before applying') do
+      subject = MachineCleanupProcessHarness.new
+      scans = 0
+      subject.define_singleton_method(:running_on_mini_host?) { true }
+      subject.define_singleton_method(:machine_cleanup_ps_rows) do
+        scans += 1
+        scans == 1 ? [] : [process_row(pid: 11, command: 'xcodebuild -scheme SaneClick test')]
+      end
+      subject.define_singleton_method(:build_machine_cleanup_plan) { |_| { actions: [] } }
+      subject.define_singleton_method(:apply_machine_cleanup_plan) { |*| raise 'new work must prevent apply' }
+      subject.define_singleton_method(:sweep_ghost_dock_tiles) { |_| raise 'Dock must not restart' }
+      assert_eq(subject.machine_cleanup(%w[--server --apply --json]), false)
+      assert_eq(scans, 2)
+    end
+
+    test('idle server cleanup can still plan and apply') do
+      subject = MachineCleanupProcessHarness.new
+      applied = false
+      subject.define_singleton_method(:running_on_mini_host?) { true }
+      subject.define_singleton_method(:build_machine_cleanup_plan) { |_| { actions: [] } }
+      subject.define_singleton_method(:apply_machine_cleanup_plan) { |*| applied = true; { success: true } }
+      subject.define_singleton_method(:sweep_ghost_dock_tiles) { |_| }
+      assert_eq(subject.machine_cleanup(%w[--server --apply --json]), true)
+      assert(applied)
+    end
+  end
+
   test_category('executable ownership') do
     test('ignores app names in editor cwd, prompts, and cleanup preserve arguments') do
       subject = MachineCleanupProcessHarness.new(ps_rows: [

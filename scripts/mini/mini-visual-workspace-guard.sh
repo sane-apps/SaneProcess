@@ -531,7 +531,7 @@ APPLESCRIPT
 
 target_peekaboo_window_count() {
   command -v peekaboo >/dev/null 2>&1 || return 0
-  peekaboo list windows --app "$TARGET_APP" --json 2>/dev/null | ruby -rjson -e '
+  peekaboo window list --app "$TARGET_APP" --json 2>/dev/null | ruby -rjson -e '
     data = JSON.parse(STDIN.read) rescue {}
     windows = data.dig("data", "windows") || []
     count = windows.count do |window|

@@ -16,6 +16,8 @@ chmod +x \
   "$ROOT/scripts/automation/run-app-review-watch.sh" \
   "$ROOT/scripts/automation/run-x-opportunity-scout.sh" \
   "$ROOT/scripts/automation/run-sanehosts-email-campaign.sh" \
+  "$ROOT/scripts/automation/run-saneclip-email-campaign.sh" \
+  "$ROOT/scripts/automation/run-saneclick-email-campaign.sh" \
   "$ROOT/scripts/automation/agent-heartbeat.sh" \
   "$ROOT/scripts/automation/pause-codex-heartbeats.sh" \
   "$ROOT/scripts/hooks/session-guardian.sh"
@@ -180,6 +182,43 @@ PY
 launchctl bootout "gui/$(id -u)/com.saneapps.sanehosts-email-campaign" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$AGENTS_DIR/com.saneapps.sanehosts-email-campaign.plist"
 echo "installed com.saneapps.sanehosts-email-campaign"
+
+# SaneClip / SaneClick E2+ morning drip (tiny Apollo cohorts; no E1 remount).
+# Weekdays 08:25 Clip / 08:30 Click. Same Hosts-style env + lock pattern.
+python3 - <<'CLIPCLICKPY'
+import plistlib, pathlib
+root = pathlib.Path.home() / "SaneApps/infra/SaneProcess"
+out = pathlib.Path.home() / "SaneApps/outputs/recurring-agents"
+out.mkdir(parents=True, exist_ok=True)
+jobs = [
+    ("com.saneapps.saneclip-email-campaign", "run-saneclip-email-campaign.sh", "saneclip-email-campaign", 8, 25),
+    ("com.saneapps.saneclick-email-campaign", "run-saneclick-email-campaign.sh", "saneclick-email-campaign", 8, 30),
+]
+for label, script, short, hour, minute in jobs:
+    data = {
+        "Label": label,
+        "ProgramArguments": ["/bin/bash", str(root / "scripts/automation" / script)],
+        "StartCalendarInterval": [{"Weekday": w, "Hour": hour, "Minute": minute} for w in (1, 2, 3, 4, 5)],
+        "RunAtLoad": False,
+        "StandardOutPath": str(out / f"{short}.stdout.log"),
+        "StandardErrorPath": str(out / f"{short}.stderr.log"),
+        "EnvironmentVariables": {
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "LANG": "en_US.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+        },
+    }
+    path = pathlib.Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+    with path.open("wb") as fh:
+        plistlib.dump(data, fh)
+    print(path)
+CLIPCLICKPY
+launchctl bootout "gui/$(id -u)/com.saneapps.saneclip-email-campaign" 2>/dev/null || true
+launchctl bootout "gui/$(id -u)/com.saneapps.saneclick-email-campaign" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$AGENTS_DIR/com.saneapps.saneclip-email-campaign.plist"
+launchctl bootstrap "gui/$(id -u)" "$AGENTS_DIR/com.saneapps.saneclick-email-campaign.plist"
+echo "installed com.saneapps.saneclip-email-campaign"
+echo "installed com.saneapps.saneclick-email-campaign"
 
 python3 - <<'PY'
 import plistlib, pathlib
