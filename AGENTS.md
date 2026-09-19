@@ -97,10 +97,7 @@ scope; update installed trusted tools/packages; use existing approved credential
 idle service when needed to activate an update. Do not ask again for the same scope. Preserve existing macOS grants and
 stable signed application identities. Do not reset TCC or rebuild/re-sign helpers merely to refresh a permission. Before
 work, identify all missing OS authorizations together; run native installers sequentially and stop on an unexpected
-prompt. Unattended checks use the shared no-prompt flags. Ask before destructive or materially broader security access
-changes. Standing approval does not authorize blanket sudo/Keychain ACL changes, credential disclosure, unrequested
-sends/publication, or bypassing platform approval controls. If macOS still requires authentication, explain the exact
-action once and use its native gate.
+prompt. Unattended checks use the shared no-prompt flags. Ask before destructive or materially broader security access changes. Standing approval does not authorize blanket sudo/Keychain ACL changes, credential disclosure, unrequested sends/publication, or bypassing platform approval controls. If macOS still requires authentication, explain the exact action once and use its native gate.
 
 ## Authority And Safety
 
