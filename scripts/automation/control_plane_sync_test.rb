@@ -233,7 +233,7 @@ tests << lambda do
   assert(!reconcile_source.include?('--reconcile-dirty'),
          'unattended Air/Mini reconcile must not auto-stash dirty app repos')
   air_memory = File.read(File.join(ROOT, 'automation', 'agentmemory-mcp-air.sh'))
-  assert(air_memory.include?('ConnectTimeout=3'), 'Air AgentMemory tunnel must fail quickly')
+  assert(air_memory.include?('ConnectTimeout=15'), 'Air AgentMemory tunnel must bound SSH long enough for off-LAN DERP')
   assert(air_memory.include?('127.0.0.1:3111'), 'Air AgentMemory tunnel target drifted')
   assert(air_memory.include?('ServerAliveInterval=15'), 'Air AgentMemory tunnel must detect dead connections')
   assert(air_memory.include?('ServerAliveCountMax=3'), 'Air AgentMemory tunnel retry bound drifted')
