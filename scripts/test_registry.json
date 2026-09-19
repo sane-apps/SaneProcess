@@ -191,6 +191,15 @@
       ]
     },
     {
+      "path": "scripts/grok-bin/agentmemory_mcp_remote_test.rb",
+      "label": "AgentMemory MCP wrapper prefers Mini worker",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/grok-bin/agentmemory_mcp_remote_test.rb"
+      ]
+    },
+    {
       "path": "scripts/automation/air_mini_acceptance_test.rb",
       "label": "Air and Mini restart acceptance tests",
       "status": "required",

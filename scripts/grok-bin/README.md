@@ -8,7 +8,7 @@ Files:
 - `README.md` — this file
 - `check-mcps` — live Grok MCP probe
 - `cloudflare-mcp-remote.sh` — token-backed Cloudflare admin MCP (`~/.config/nv/env` then Keychain)
-- `agentmemory-mcp-remote.sh` — AgentMemory Cloud MCP. Daily clients must not open Access tabs. One-time grant is `--login`.
+- `agentmemory-mcp-remote.sh` — Daily AgentMemory MCP talks to the Mini worker on loopback `:3111` (`agentmemory mcp --no-engine`). Cloud Access is `--login` or `AGENTMEMORY_MCP_FORCE_CLOUD=1` only and must not hang session start.
 - `xcode-mcp.sh` / `xcode-mcp-frame.py` — Mini `mcpbridge`. Air Grok uses the Mini HTTP singleton at `http://127.0.0.1:37915/mcp` through the AgentMemory tunnel. `--framed` is the Content-Length path for that singleton.
 
 Native Grok safety hooks are not in this bin dir. Git source is

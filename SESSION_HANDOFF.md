@@ -1,3 +1,19 @@
+## 2026-09-19 evolve (Mini Grok)
+
+- Flue: skip. Not a hands-down win over the Python translation pipeline or Cloudflare Agents SDK.
+- Firecrawl CLI shared Mini+Air, pin 1.23.3. Mini authenticated. Scrape of example.com proved.
+- Peekaboo **4.4.0** from the GitHub universal tarball (sha256 `6260d356…`), same Team ID `FWJYW4S8P8`. Brew upgrade still refuses (no bottle, wants Xcode 27). Binary installed into the existing 4.3.3 keg plus `~/.local/libexec/peekaboo-4.4.0`. Screen Recording still Granted. Capture while Grok running: 1920x1080 PNG. 4.3.3 backup at `~/.local/libexec/peekaboo-4.3.3-backup`.
+- AgentMemory MCP wrapper now talks to Mini loopback `:3111` (`agentmemory mcp --no-engine`). Cloud Access is `--login` / `AGENTMEMORY_MCP_FORCE_CLOUD=1` only. `check-mcps` agentmemory **PASS**. Tests `scripts/grok-bin/agentmemory_mcp_remote_test.rb` 5/5. This Grok TUI session still needs a restart to reconnect MCP.
+- Uncommitted SaneProcess: baseline, wrapper, tests, handoff. No origin push.
+
+## 2026-09-19 Saturday launch-ops
+
+- Host Mini. livez ok on 127.0.0.1:3111. CLI connected, v0.9.29, 1146 memories. LaunchAgent loaded. No installer. Grok MCP `agentmemory` timed out at session start; worker health is livez.
+- Classifier `GET /api/classifier-health` 200, `status=healthy`, lastRunAt `2026-09-19T12:00:40.916Z`, consecutiveFailures 0, goldenMisses none. Recovered `2026-09-08T09:01:12Z` after lastFailure `2026-09-08T08:00:55Z`. No deploy. No synthetic canary in the work inbox (`source: canary` 0 in 200 scanned).
+- Inbox: autoresolve 0. Reviewed already-spam `#1538` MEDIAPRONET $19 listing pitch (unsubscribe delivered 2026-09-18; no send/pay/account). `#1535` Apple Mail unsubscribe already resolved. Standing open: `#1525`/`#1517`/`#1483`/`#1482`/`#1404` departed/OOO auto-replies (evidence guard), `#1508` BidFlip paid-rank pitch, `#1331` Setapp agreement (owner must accept in vendor account), `#1343` Apollo nurture, `#1367` Setapp business thread pending confirmation. `check-inbox.sh issues` JSON parse failed; canonical `github-queue.sh issues --scope support-apps` succeeded, standing help-wanted/workflow issues unchanged.
+- Launch calendars: nothing newly due today. Standing historical no-gos unchanged (SaneVideo release_preflight red; SaneScan VisionKit/copy gate; SaneSales/SaneCite launch gates; SaneLot outreach canary dates). No launch_readiness sweep. Training off.
+- Skipped (not Friday): storefront inspect, AI meter, SaneLot Workers AI watch. Skipped (not Sunday): file-memory import.
+
 ## 2026-09-18 Friday launch-ops
 
 - Host Mini. livez ok on 127.0.0.1:3111. CLI connected, v0.9.29, 1146 memories. LaunchAgent loaded. No installer. Grok MCP `agentmemory` timed out at session start; worker health is livez.
