@@ -93,7 +93,7 @@ exit(run_tests('SaneProcess MCP contract tests') do
       bridge = server_source('scripts/mcp_singleton_bridge.cjs')
       assert_includes(bridge, 'port: 37915')
       assert_includes(bridge, "homePath('.grok', 'bin', 'xcode-mcp.sh')")
-      assert_includes(bridge, 'args: []')
+      assert_includes(bridge, "args: ['--framed']")
       true
     end
 
@@ -106,7 +106,7 @@ exit(run_tests('SaneProcess MCP contract tests') do
       assert_includes(output, '<string>/opt/homebrew/opt/node@24/bin/node</string>')
       assert_match(output, %r{<key>KeepAlive</key>\s*<dict>\s*<key>SuccessfulExit</key>\s*<false/>\s*</dict>})
       assert_match(output, %r{<key>ThrottleInterval</key>\s*<integer>60</integer>})
-      assert_includes(server_source('scripts/mcp_singleton_bridge.cjs'), '@steipete/macos-automator-mcp@0.4.6')
+      assert_includes(server_source('scripts/mcp_singleton_bridge.cjs'), '@steipete/macos-automator-mcp@0.4.7')
       true
     end
 

@@ -42,8 +42,9 @@ Options:
   --force            Overwrite files previously installed by SaneProcess
   -h, --help         Show this help
 The default remains "all" so existing SaneApps setup flows keep the full
-Claude + Codex-compatible surface. Public adopters can choose a narrower
-adapter without getting client-specific files they do not use.
+Grok/Cursor/Claude/Codex-compatible surface. Regular work is Grok, Grokbot,
+and Cursor; Codex and Claude are compatibility adapters. Public adopters can
+choose a narrower adapter without getting client-specific files they do not use.
 EOF
 }
 
@@ -618,11 +619,11 @@ show_install_commands() {
     fi
 }
 
-show_install_commands "context7" "npx -y @upstash/context7-mcp@3.2.3" ""
+show_install_commands "context7" "npx -y @upstash/context7-mcp@4.0.5" ""
 show_install_commands "github" "npx -y @modelcontextprotocol/server-github@2025.4.8" "Requires: GITHUB_PERSONAL_ACCESS_TOKEN"
 if [ "$PLATFORM" = "macOS" ]; then
     show_install_commands "apple-docs" "npx -y @mweinbach/apple-docs-mcp@1.3.1" ""
-    show_install_commands "macos-automator" "npx -y @steipete/macos-automator-mcp@0.4.6" ""
+    show_install_commands "macos-automator" "npx -y @steipete/macos-automator-mcp@0.4.7" ""
 fi
 echo ""
 

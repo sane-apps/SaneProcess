@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'json'
+
 # Normalize Claude, Grok, Cursor, and Codex hook stdin into one shape.
 # Claude: tool_name / tool_input (Bash, Write, Edit)
 # Grok:   toolName / toolInput  (run_terminal_command, search_replace)
