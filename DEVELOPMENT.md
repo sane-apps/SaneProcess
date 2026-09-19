@@ -69,7 +69,10 @@ user approves the exact exception.
 Run `hostname` before cross-machine reasoning. On the Mini, work directly in
 the local checkout; do not add a self-SSH hop. From the Air, `ssh mini` is the
 canonical controller route. A local-vs-`ssh mini` comparison performed on the
-Mini sees the same filesystem and proves nothing about Air parity.
+Mini sees the same filesystem and proves nothing about Air parity. Mini shells
+default to macOS bash 3.2 (no array append, no herestrings); Mini scripts must
+use file-based alternatives. Mini script source of truth is
+`SaneProcess/scripts/mini/`, deployed with the deploy script.
 
 GitHub `main` is canonical for committed code. Dirty work is snapshot-only and
 never auto-applied. The Air's conflict-preserving 15-minute file-memory sync is
@@ -232,6 +235,9 @@ SaneProcess has one SOP with multiple client adapters.
   in fix mode, even when a repo intentionally has no `Gemfile`.
 - Keep low-level bootstrap/package validators Ruby 2.6-parseable until the
   Homebrew Ruby check has had a chance to run.
+- Do not depend on Ruby `Timeout.timeout` for blocking subprocess IO; it does
+  not fire reliably there. Use process-level control with a join timeout and
+  an explicit kill path.
 
 | Client | Install mode | Stable surface |
 |--------|--------------|----------------|

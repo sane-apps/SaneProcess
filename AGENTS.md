@@ -1,48 +1,38 @@
 # SaneApps AGENTS
 
 SaneProcess is the shared SaneApps operating harness. This file is the active
-agent overlay, not the full runbook. Detailed implementation, release, Mini,
-and operator setup notes live in `DEVELOPMENT.md`, `ARCHITECTURE.md`,
+agent overlay; the full runbook lives in `DEVELOPMENT.md`, `ARCHITECTURE.md`,
 `DEVELOPER_SETUP.md`, `templates/RELEASE_SOP.md`, and `scripts/`.
 
-Regular daily work is Grok, Grokbot, and Cursor. Grok uses native
-`~/.grok/hooks` (git source `scripts/hooks/grok/hooks.json`). Cursor uses
-`~/.cursor/hooks.json`. Keep Codex/Claude hook adapters working. Do not send
+Regular daily work is Grok, Grokbot, and Cursor (native `~/.grok/hooks` and
+`~/.cursor/hooks.json`; keep Codex/Claude adapters working). Do not send
 regular jobs to OpenAI or Anthropic unless the owner asks.
 
-Speak plainly and briefly. Use singular voice for SaneApps communications:
-`I`, `me`, `my`; never `we`, `us`, or `our`.
+Speak plainly and briefly, in singular voice (`I`, `me`, `my`).
 
 ## What Belongs Here
 
-Keep only instructions an agent must know before hooks or wrappers can help.
-If a rule is already enforced by a hook, SaneMaster command, or test receipt,
-prefer pointing to that mechanism instead of duplicating the whole policy here.
-
-Hard enforcement lives in:
-
-- `scripts/hooks/` for launch, build-route, release, email, GitHub, tracking,
-  session-end, security, visual-proof, GUI-feedback-loop, and completion gates.
-- `scripts/SaneMaster.rb` and `scripts/sanemaster/` for canonical workflows.
-- `scripts/validation_report.rb`, `process_eval`, `sop_review`,
-  `near_miss_review`, and tests for repeatable process health evidence.
-- `SESSION_HANDOFF.md`, `.claude/research.md`, agent file memory, and
-  Mini-owned AgentMemory for active context and durable learnings. Serena is
-  code-navigation only; its memories were absorbed into AgentMemory.
+Keep only instructions an agent must know before hooks or wrappers can help;
+point at enforcement instead of duplicating policy. Enforcement:
+`scripts/hooks/` (launch, build-route, release, email, GitHub, tracking,
+session-end, security, visual-proof, GUI-feedback, completion gates);
+`scripts/SaneMaster.rb` + `scripts/sanemaster/` (workflows);
+`validation_report.rb`, `process_eval`, `sop_review`, `near_miss_review`,
+tests (process evidence); handoff, research cache, file memory, Mini
+AgentMemory (context; Serena is code-navigation only).
 
 ## Session Start
 
-For tiny read-only answers or one local command, read the relevant file/command
-surface and answer. For code, audit, release, support, payment, App Store,
-automation, UI/runtime, or multi-file work:
+Tiny read-only answers need only the relevant file/command surface. For code,
+audit, release, support, payment, App Store, automation, UI/runtime, or
+multi-file work:
 
 1. Read `SESSION_HANDOFF.md`.
 2. Read relevant file memory and the active skill registry; query shared
    context with AgentMemory `memory_recall` or `memory_smart_search`.
 3. Run `~/.grok/bin/check-mcps` or `ruby scripts/SaneMaster.rb tool_discovery --query "mcp health"` when MCP health affects the task.
-4. Run `ruby scripts/validation_report.rb` for release/audit/process work.
-   Add `--release-checklists` only when you need the deep all-app artifact
-   checklist; the default report is the cheaper process/release verdict.
+4. Run `ruby scripts/validation_report.rb` for release/audit/process work
+   (`--release-checklists` only for the deep all-app artifact checklist).
 5. Use the Mac Mini for SaneApps inspection, build, test, screenshots, and
    runtime verification unless the Mini is unavailable or the user explicitly
    approves a local exception.
@@ -52,10 +42,8 @@ automation, UI/runtime, or multi-file work:
 When code, tooling, docs, policy, support, release, or UI/runtime behavior
 changed:
 
-1. Update project-scoped file memory and persist cross-project AgentMemory
-   facts/lessons with `memory_save` or `memory_lesson_save`.
-2. Update `SESSION_HANDOFF.md` with active state, proof, open issues, and next
-   useful moves.
+1. Update file memory and persist cross-project AgentMemory facts/lessons.
+2. Update `SESSION_HANDOFF.md` with active state, proof, open issues, next moves.
 3. Run `ruby scripts/SaneMaster.rb sop_review --json`.
 4. Record an evidence-backed SOP rating only within the objective cap reported
    by the tooling.
@@ -74,7 +62,7 @@ fixes. Treat memory and handoff as live operational state.
 | 4 | Green means go | Do not claim done with failing tests or missing required proof. |
 | 5 | House rules, use tools | Use canonical wrappers for build/test/release/launch/email/sales/support. |
 | 6 | Build, kill, launch, log | Runtime changes need full cycle proof; tooling/docs need matching tests/evals. |
-| 7 | No test? No rest | Every fix gets a meaningful test or explicit proof receipt — and no BLIND test: a test must fail for the real bug at RUNTIME (drive the app, assert the customer-observable end-state); structure/string-match guards (`source.contains`) are not behavioral coverage. |
+| 7 | No test? No rest | Every fix gets a meaningful runtime test (drive the app, assert the customer-observable end-state) or explicit proof receipt — never a BLIND string-match guard. |
 | 8 | Bug found? Write it down | Update file memory + AgentMemory when bugs change status. |
 | 9 | New file? Gen the pile | Prefer templates/scaffolds and existing docs/files. |
 | 10 | 500 fine, 800 line | File and component-owner size both count; split at 800. |
@@ -110,11 +98,7 @@ When two instructions disagree, use this order:
 5. Dated research and memories only when they are not expired or superseded.
 
 Normal read, edit, build, test, commit, feature-push, SSH, rsync, and browser work must remain usable.
-Approved tools may consume local credentials internally, including when invoked from the Air over
-SSH, but agents must never dump, print, copy, or export raw secret material. Real sends, releases, uploads, reboots, and customer/data mutations use their
-canonical approval gates. Irreversible deletion of a home, repository,
-history, production resource, credential, ownership, license, or money is a
-manual user-only action and must be mechanically blocked even in bypass mode.
+Approved tools may consume local credentials internally, but agents must never dump, print, copy, or export raw secret material. Sends, releases, uploads, reboots, and customer/data mutations use their canonical approval gates. Irreversible deletion of a home, repository, history, production resource, credential, ownership, license, or money is manual user-only and must be mechanically blocked even in bypass mode.
 
 Working locally on the Mini means working directly in the local checkout. Do
 not SSH to `mini` from the Mini; use `ssh mini` only from the Air/controller.
@@ -122,9 +106,8 @@ Run `hostname` before cross-machine diagnosis, sync claims, or acceptance work.
 
 ## Subagents
 
-Subagents are authorized for SaneApps work when they materially improve
-coverage. Before spawning, decide what the parent will do locally and what can
-run in parallel.
+Subagents are authorized when they materially improve coverage. Before
+spawning, split parent-local vs parallel work.
 
 Every subagent prompt must include:
 
@@ -136,23 +119,21 @@ Abide by every hook exactly as a human session would.
 ```
 
 Use GPT subagents for broad review, research, audits, planning, and bounded
-implementation. Do not use NVIDIA agents, `nv` sweeps, or `nvidia_vision`
-unless the user explicitly asks for that specific run.
-Do not use Gemini/Google provider paths as standard SaneApps tooling; use
-Apple Docs, macOS Automator, Grok, Codex, Claude, and SaneMaster routes instead.
+implementation. NVIDIA agents and Gemini/Google paths are exception-only
+(explicit owner request per run); default to Apple Docs, macOS Automator,
+Grok, Codex, Claude, and SaneMaster.
 
 ## Cloudflare Workers AI / NVIDIA NIM
 
 Before any Workers AI or NIM **inference** call, follow `docs/LLM_VENDOR_API_SOP.md`. Use `scripts/llm_api_research_gate.rb` then smoke. Hook: `scripts/hooks/sane_llm_api_guard.rb` (via `sane_bash_guards.rb`). This is separate from the NVIDIA-agent ban (`nv` sweeps / `nvidia_vision`) — NIM draft APIs are allowed only with the SOP/receipt path.
 
-Reviewer routing is perspective-driven. Canonical route, thread sizing, and live
-tool/version discovery: `DEVELOPMENT.md` under "Reviewer fan-out routing".
+Reviewer routing is perspective-driven; canonical route and discovery:
+`DEVELOPMENT.md`, "Reviewer fan-out routing".
 
 ## Canonical Routes
 
-Use SaneMaster for stateful workflows. Read-only diagnostics are fine, but
-stateful build/test/release/launch/support/business workflows must go through
-the wrapper.
+Stateful build/test/release/launch/support/business workflows must go through
+the SaneMaster wrapper; read-only diagnostics may run direct.
 
 | Need | Canonical Route |
 |------|-----------------|
@@ -164,13 +145,12 @@ the wrapper.
 
 Full command map: `DEVELOPMENT.md` under "SaneMaster Commands".
 
-Runtime app tests must attach a live app log stream from before launch/relaunch through
-the tested workflow and save the receipt path. GUI/runtime results without live logs are invalid.
+Runtime app tests must attach a live app log stream from before launch through
+the workflow and save the receipt path; results without live logs are invalid.
 
-If a canonical route fails, fix it or explain why it is insufficient; do not silently work around it.
-Raw `ssh mini ... screencapture ...` is not a fallback; it is blocked by
-`scripts/hooks/sane_ssh_guard.sh` and the Bash guard dispatcher. Use the
-canonical Mini screenshot wrapper or fix that wrapper.
+If a canonical route fails, fix it or explain why; do not silently work around
+it. Raw `ssh mini ... screencapture ...` is blocked by hook — use the Mini
+screenshot wrapper or fix it.
 
 ## Browser And App Control
 
@@ -178,73 +158,57 @@ Mini browser work is Brave-only (owner rule, 2026-07-14): never script Safari
 for portal or web-proof work. Full control ladder: `DEVELOPMENT.md` under
 "Reviewer fan-out routing" (browser and app-control ladder).
 
-Mini Terminal-host rule: cleanup must never unminimize, raise, maximize, or
-activate an automation Terminal window. Use title-scoped reclaim during an app
-interaction sequence; reserve `--reclaim-all` for workflow boundaries. Pass
-`--restore-bundle-id <bundle-id>` when the hidden Terminal command controls an
-open app. If Terminal becomes visible or frontmost, stop the GUI sequence and
-fix the runner before clicking again.
+Mini Terminal-host rule: cleanup must never raise or activate an automation
+Terminal window. Use title-scoped reclaim inside app sequences,
+`--reclaim-all` only at workflow boundaries, and `--restore-bundle-id` when
+the hidden command controls an open app. If Terminal surfaces, stop the GUI
+sequence and fix the runner before clicking again.
 
-Screenshots remain final evidence, not the first control mechanism. Use
-`scripts/mini/capture-mini-screenshot.sh` only when a receipt needs an image.
-The same ladder applies in Claude when its browser/app-control plugin is
-active; compare live tools (`claude mcp list` and the current tool surface)
-with config before declaring a tool missing.
+Screenshots are final evidence, not the first control mechanism — capture only
+when a receipt needs an image. Same ladder in Claude with its browser plugin;
+compare live tools with config before declaring one missing.
 
-Brave on the Mac Mini is the canonical authenticated control plane for
-Setapp, App Store Connect, Apollo, Lemon Squeezy, Cloudflare, Resend, and
-similar admin portals. This applies to both Codex and Claude. API wrappers
-remain preferred when healthy, but agents must inspect the live Brave session
-before declaring an admin surface unavailable. Safari is not a Setapp
-dependency. A missing portal token blocks only the unattended API lane, not
-browser access. Managed shell `osascript` may report that Brave cannot be
-found even while the direct browser/Mac automation surface is working; treat
-that as a shell Automation/TCC boundary and inspect Brave through the active
-agent control surface.
+Brave on the Mini is the canonical authenticated control plane for Setapp,
+ASC, Apollo, Lemon Squeezy, Cloudflare, Resend, and similar portals (Codex
+and Claude alike). Prefer healthy API wrappers, but inspect the live Brave
+session before declaring a surface unavailable: a missing token blocks only
+the unattended API lane, and a managed-shell "Brave not found" is a TCC
+boundary, not proof Brave is down.
 
 ## Tool Discovery
 
 Before declaring a tool missing or inventing a repeated workaround:
 
-1. Check the active client skill registry.
-2. Run `ruby scripts/SaneMaster.rb tool_discovery --query "..."`.
-3. Search existing scripts, hooks, skills, and core docs.
-4. If still missing and repeatable, add the capability to SaneProcess and make
-   it the standard path.
+Check the skill registry, run `tool_discovery --query "..."`, search existing
+scripts/hooks/skills/docs; if still missing and repeatable, add it to
+SaneProcess as the standard path.
 
 ## Mini-First Rule
 
 The Mac Mini is the canonical SaneApps build/test/runtime host.
 
-- Use `ssh mini` and SaneMaster/sane_test wrappers for app work.
-- Local fallback is allowed only when the Mini is unavailable or explicitly
-  approved for that exact task.
-- Do not leave test apps, stale shells, or helper windows running on the Mini.
-- Mini admin/tunnel/build-server details live in `DEVELOPMENT.md` and
-  `scripts/mini/`.
+Use `ssh mini` and SaneMaster/sane_test wrappers for app work. Local fallback
+only when the Mini is unavailable or explicitly approved for that exact task.
+Leave no test apps, stale shells, or helper windows on the Mini. Details:
+`DEVELOPMENT.md`, `scripts/mini/`.
 
 ## Visual/UI Proof
 
-Green tests are not enough for customer-facing UI claims. Capture clean saved
-Mini screenshots for every customer-facing view/state touched, inspect them,
-and record paths plus verdicts. Full freshness, claim-mapping, and validity
-rules: `DEVELOPMENT.md` under "Runtime And Visual Evidence".
+Green tests are not enough for UI claims. Capture clean saved Mini screenshots
+for every customer-facing view/state touched, inspect them, record paths plus
+verdicts. Full rules: `DEVELOPMENT.md`, "Runtime And Visual Evidence".
 
 ## GUI / Portal Feedback Loop
 
-Click return is not success. After Brave/ASC/osascript/System Events mutations,
-re-read dialog/page/AX/API state before claiming done. Shared detector:
-`scripts/hooks/core/gui_feedback.rb` (Claude sanetrack/sanestop; Cursor
-`~/.cursor/hooks` afterShellExecution + stop follow-up).
+Click return is not success. After GUI/portal mutations, re-read dialog/page/AX/API state before claiming done. Detector: `scripts/hooks/core/gui_feedback.rb`.
 
 ## Customer Email
 
 Default mailbox: SaneApps work email `hi@saneapps.com`.
 
-- Use `check-inbox.sh` / `SaneMaster.rb check_inbox`. Full inbox, media-review,
-  and approval flow: `DEVELOPMENT.md` under "Support And Business Signals".
-- Run `review <id>` before reply or resolve.
-- Show the exact draft and wait for explicit approval before sending.
+Use `check-inbox.sh` / `check_inbox` (full flow: `DEVELOPMENT.md`, "Support
+And Business Signals"). Run `review <id>` before reply/resolve; show the exact
+draft and wait for explicit approval before sending.
 - Existing app users should be told to update from inside the app. Do not send
   website/download links for update/fix/test replies unless the user needs a
   reinstall or direct-download recovery path.
@@ -280,14 +244,13 @@ media, identity ambiguity, and promises about unfixed bugs.
   App Store lanes.
 - Use public release-note terminology `Basic` and `Pro`; never public
   "free mode" wording.
-- Everything else (note comparison, lane setup, wrapper commands) lives in
-  `templates/RELEASE_SOP.md` and `DEVELOPMENT.md`.
+- Note comparison, lane setup, wrapper commands: `templates/RELEASE_SOP.md`.
 
 ## SaneUI Gate
 
-For settings, About, license, update, button-style, or typography work, inspect
-`~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
-Shared settings chrome belongs in SaneUI, not app-local clones.
+For settings/About/license/update/button/typography work, inspect
+`~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first;
+no app-local settings clones.
 
 Automated guard: `ruby scripts/SaneMaster.rb saneui_guard`.
 
