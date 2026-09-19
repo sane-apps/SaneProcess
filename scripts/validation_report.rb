@@ -51,6 +51,8 @@ class ValidationReport
   AGENTS_WARNING_BYTES = 28 * 1024
   AGENTS_HARD_BYTES = 32 * 1024
   AGENTS_WARNING_LINES = 450
+  DELEGATION_WARNING_BYTES = 60 * 1024
+  DELEGATION_HARD_BYTES = 62 * 1024
   RESEARCH_CACHE_MAX_LINES = 200
   HANDOFF_MAX_LINES = 300
   DEVELOPMENT_WARNING_LINES = 500
@@ -2450,6 +2452,7 @@ class ValidationReport
 
       check_context_file_sizes(expanded_path, File.basename(expanded_path), issues_found, warnings_found)
     end
+    check_home_delegation_budget(issues_found, warnings_found)
     check_sop_policy_changes_need_enforcement(issues_found, warnings_found)
 
     @metrics[:documentation_currency] = {
@@ -2507,6 +2510,19 @@ class ValidationReport
 
   def saneprocess_repo_root
     File.expand_path('..', __dir__)
+  end
+
+  def check_home_delegation_budget(issues_found, warnings_found, home = Dir.home)
+    paths = [File.join(home, 'AGENTS.md'), File.join(home, '.codex', 'AGENTS.md')]
+    present = paths.select { |path| File.file?(path) }
+    return if present.empty?
+
+    total = present.sum { |path| File.size(path) }
+    if total >= DELEGATION_HARD_BYTES
+      issues_found << "home rules (~/AGENTS.md + ~/.codex/AGENTS.md) are #{total} bytes, over delegation budget #{DELEGATION_HARD_BYTES} (Muse subagent cap 65536 incl framing); move shared policy to one file and point, do not duplicate"
+    elsif total >= DELEGATION_WARNING_BYTES
+      warnings_found << "home rules (~/AGENTS.md + ~/.codex/AGENTS.md) are #{total} bytes; nearing delegation budget #{DELEGATION_HARD_BYTES}"
+    end
   end
 
   def check_sop_policy_changes_need_enforcement(issues_found, _warnings_found)
