@@ -61,6 +61,7 @@ The API compatibility gate blocks known newer-SDK symbols that can crash before 
 - If appcast history is kept, every advertised enclosure URL must resolve.
 - Do not delete historical direct-download binaries by default. Only purge them intentionally after also pruning any public references.
 - A docs-only/appcast repair deploy is valid when the feed is wrong and the binary is not changing.
+- Scope: this history rule governs R2/appcast downloads; the Lemon Squeezy storefront rule (keep only the newest ZIP listed) lives in the hosted-file handoff below.
 
 Preflight review requirement:
 - Review every open bug-like GitHub issue that could plausibly affect the release, including tint/appearance, updater behavior, build-from-source, browse/focus, and layout/reset issues.
@@ -198,7 +199,7 @@ ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \
 ./scripts/SaneMaster.rb appstore_preflight  # active App Store lanes only
 ```
 
-6. Repair the ASC lane before upload:
+8. Repair the ASC lane before upload:
 
 ```bash
 ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
@@ -213,12 +214,12 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
   --preflight-version-state
 ```
 
-7. Build/export with the standard release script, then submit the pkg with `appstore_submit.rb`.
+9. Build/export with the standard release script, then submit the pkg with `appstore_submit.rb`.
 - Use full `release.sh --deploy` only when the direct channel should also ship.
 - Use build/export plus `appstore_submit.rb --pkg` when you only need to repair the App Store lane.
 - `release.sh` runs `./scripts/SaneMaster.rb appstore_preflight` before any active App Store submit step. Direct-download-only apps skip this lane because `.saneprocess appstore.enabled: false` is authoritative.
 
-### 0d. Mini Visual Verification Workflow
+### 0c. Mini Visual Verification Workflow
 
 For user-facing desktop changes, do visual verification on the Mini before release.
 
@@ -244,12 +245,31 @@ Run this wrapper from the controlling machine with Codex installed. It copies th
 
 - This wrapper copies the shared screenshot helper to the Mini and runs it through `mini-gui-run.sh`.
 - It is the canonical live-window path.
-- First use may require one-time Screen Recording permission for Terminal on the Mini.
+- First use follows the expected permission branch: grant one-time Screen Recording permission for Terminal on the Mini, then re-run the capture.
 
 3. If live capture is blocked, use a deterministic render artifact from tests.
 
 - For SwiftUI settings/screens, prefer test-generated PNG renders over guessing from logs.
 - Save at least one visual artifact for the release record.
+
+#### Capture-agent queue fallback (when live capture is blocked)
+
+Agent `com.saneapps.mini-screenshot` runs in the Mini GUI session (which holds
+the Screen Recording grant) and serves `~/.sane/capture-queue`: write
+`request-<id>.json`, poll `receipt-<id>.json`. From the Air:
+
+```bash
+ssh mini 'cat > ~/.sane/capture-queue/request-air1.json' <<'EOF'
+{"id": "air1", "args": ["desktop", "--skip-cleanup"]}
+EOF
+# poll up to ~2 min for ~/.sane/capture-queue/receipt-air1.json:
+# {"id","exit","png","error"} — exit 0 + png path = success, nonzero = stop, no retry loop
+scp mini:<png-from-receipt> <local-path>   # then inspect, then delete BOTH sides + receipt + request (queue must end empty)
+```
+
+Never fall back to raw `screencapture` over SSH (blocked by
+`sane_bash_guards.rb`, wrong TCC identity). Full recipe:
+`scripts/mini/SCREENSHOT_TOOLS.md` (agent section).
 
 Hard rule:
 - Do not claim a user-facing fix is visually verified unless you have a saved screenshot/render from the Mini path or the deterministic render lane.
@@ -288,7 +308,7 @@ Official sources checked 2026-09-06: [file object](https://docs.lemonsqueezy.com
 The documented Files API supports read/list; use the existing dashboard for upload
 and deletion, not guessed private API endpoints.
 
-### 0c. Setapp Lane Prep
+### 0d. Setapp Lane Prep
 
 Treat Setapp as a separate channel, not as a direct-build shortcut.
 

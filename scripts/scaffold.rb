@@ -239,14 +239,14 @@ def main
   generate_stub(project_dir, 'AGENTS.md', <<~MD)
     # #{app_name} Agent Instructions
 
-    This file is the shared source of truth for Codex, Claude, Gemini, and other
+    This file is the shared source of truth for Grok, Grokbot, Cursor, and other
     compatible coding agents working in this repo.
 
     ## Defaults
 
-    - Codex is the primary/default toolset.
+    - Regular clients are Grok, Grokbot, and Cursor. Codex and Claude are compatibility lanes.
     - Read this file before changing behavior.
-    - Keep active research in `.codex/research.md`.
+    - Keep active research in the project research cache.
     - Promote durable decisions into `ARCHITECTURE.md`, `DEVELOPMENT.md`,
       `SESSION_HANDOFF.md`, memory, or AgentMemory.
     - Use `./scripts/SaneMaster.rb` for build, test, release, analytics, and
@@ -257,7 +257,7 @@ def main
     # #{app_name} Claude Compatibility Overlay
 
     Read [AGENTS.md](AGENTS.md) first. It is the shared source of truth for
-    Codex, Claude, Gemini, and other compatible coding agents.
+    Grok, Grokbot, Cursor, and other compatible coding agents.
 
     > **Project Docs:** [AGENTS](AGENTS.md) | [README](README.md) | [DEVELOPMENT](DEVELOPMENT.md) | [ARCHITECTURE](ARCHITECTURE.md) | [SESSION_HANDOFF](SESSION_HANDOFF.md)
 

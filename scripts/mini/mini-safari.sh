@@ -75,7 +75,9 @@ resolve_mini_host() {
   local candidate=""
   local candidates=""
 
-  if ssh -o BatchMode=yes -o ConnectTimeout=2 "$host" true >/dev/null 2>&1; then
+  # Do not override ConnectTimeout. Host mini uses the LAN→Tailscale proxy
+  # (~/.ssh/config ConnectTimeout 15). A 2s override makes a live Mini look down.
+  if ssh -o BatchMode=yes "$host" true >/dev/null 2>&1; then
     printf '%s' "$host"
     return 0
   fi
@@ -100,7 +102,7 @@ resolve_mini_host() {
 
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
-    if ssh -o BatchMode=yes -o ConnectTimeout=3 "$candidate" true >/dev/null 2>&1; then
+    if ssh -o BatchMode=yes "$candidate" true >/dev/null 2>&1; then
       printf '%s' "$candidate"
       return 0
     fi

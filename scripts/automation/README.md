@@ -8,7 +8,7 @@ repo-root-safe rule:
 
 ## Prerequisites
 
-- `OPENAI_API_KEY` available in the shell environment for GPT audit fallbacks
+- `OPENAI_API_KEY` in the shell environment only for `gpt_audit.py --backend responses-api` (the default `codex-exec` backend needs no key)
 - Git repositories with tags (for release notes)
 - SaneApps projects at `~/SaneApps/apps/`
 

@@ -43,6 +43,7 @@ exit(run_tests('Mini AgentMemory Tests') do
         assert_includes(source, "<string>#{supervisor}</string>")
         assert(File.executable?(supervisor), 'installed supervisor must be executable')
         assert_includes(File.read(INSTALLER), "grep -Eq 'Health:[[:space:]].*healthy'")
+        assert_includes(File.read(INSTALLER), 'agentmemory/livez')
         true
       end
     end
@@ -50,6 +51,8 @@ exit(run_tests('Mini AgentMemory Tests') do
     test('exits nonzero when the child engine loses health so launchd can restart it') do
       Dir.mktmpdir('agentmemory-supervisor') do |dir|
         fake_bin = File.join(dir, 'agentmemory')
+        fake_curl = File.join(dir, 'curl')
+        fake_lsof = File.join(dir, 'lsof')
         count = File.join(dir, 'status-count')
         livez = File.join(dir, 'livez')
         File.write(livez, 'ok')
@@ -76,9 +79,22 @@ exit(run_tests('Mini AgentMemory Tests') do
               ;;
           esac
         SH
-        FileUtils.chmod(0o755, fake_bin)
+        File.write(fake_curl, <<~SH)
+          #!/bin/sh
+          # livez required; fail after the second healthy status observation
+          count=0
+          [ ! -f "$STATUS_COUNT" ] || count="$(cat "$STATUS_COUNT")"
+          if [ "$count" -le 2 ]; then
+            exit 0
+          fi
+          exit 22
+        SH
+        File.write(fake_lsof, "#!/bin/sh\nexit 1\n")
+        FileUtils.chmod(0o755, [fake_bin, fake_curl, fake_lsof])
         env = {
           'SANE_AGENTMEMORY_BIN' => fake_bin,
+          'SANE_CURL_BIN' => fake_curl,
+          'SANE_LSOF_BIN' => fake_lsof,
           'SANE_AGENTMEMORY_HEALTH_INTERVAL' => '0.1',
           'SANE_AGENTMEMORY_HEALTH_MISSES' => '2',
           'SANE_AGENTMEMORY_STARTUP_ATTEMPTS' => '2',
@@ -89,6 +105,57 @@ exit(run_tests('Mini AgentMemory Tests') do
         _out, err, status = Open3.capture3(env, '/bin/bash', SUPERVISOR)
         assert(!status.success?, 'supervisor must request a launchd restart after sustained health loss')
         assert_includes(err, 'exiting for launchd restart')
+        true
+      end
+    end
+
+    test('reclaims orphan listeners on the AgentMemory port before restart') do
+      Dir.mktmpdir('agentmemory-reclaim') do |dir|
+        fake_bin = File.join(dir, 'agentmemory')
+        fake_curl = File.join(dir, 'curl')
+        fake_lsof = File.join(dir, 'lsof')
+        fake_kill = File.join(dir, 'kill')
+        kill_log = File.join(dir, 'kill.log')
+        File.write(fake_bin, <<~SH)
+          #!/bin/sh
+          case "${1:-}" in
+            status) echo 'Not running'; exit 1 ;;
+            stop) exit 0 ;;
+            *) exit 1 ;;
+          esac
+        SH
+        File.write(fake_curl, "#!/bin/sh\nexit 22\n")
+        File.write(fake_lsof, <<~SH)
+          #!/bin/sh
+          # First reclaim sees orphan 4242; later calls see nothing.
+          if [ ! -f "$LSOF_FIRED" ]; then
+            touch "$LSOF_FIRED"
+            echo 4242
+            exit 0
+          fi
+          exit 1
+        SH
+        File.write(fake_kill, <<~SH)
+          #!/bin/sh
+          echo "$*" >> "$KILL_LOG"
+          exit 0
+        SH
+        FileUtils.chmod(0o755, [fake_bin, fake_curl, fake_lsof, fake_kill])
+        env = {
+          'SANE_AGENTMEMORY_BIN' => fake_bin,
+          'SANE_CURL_BIN' => fake_curl,
+          'SANE_LSOF_BIN' => fake_lsof,
+          'SANE_KILL_BIN' => fake_kill,
+          'SANE_AGENTMEMORY_STARTUP_ATTEMPTS' => '1',
+          'SANE_AGENTMEMORY_STARTUP_INTERVAL' => '0.05',
+          'KILL_LOG' => kill_log,
+          'LSOF_FIRED' => File.join(dir, 'lsof-fired')
+        }
+        _out, err, status = Open3.capture3(env, '/bin/bash', SUPERVISOR)
+        assert(!status.success?)
+        assert_includes(err, 'Reclaiming orphan listener pid=4242')
+        assert(File.file?(kill_log), 'kill must be invoked for orphan pid')
+        assert_includes(File.read(kill_log), '-TERM 4242')
         true
       end
     end

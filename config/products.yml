@@ -87,7 +87,7 @@ products:
     appcast: https://sanesales.com/appcast.xml
     checkout_uuid: 5f7903d4-d6c8-4da4-b3e3-4586ef86bb51
 
-  sanebooks:
+  sanebooks: # Key 'sanebooks' is the stable identifier scripts iterate by; display name is ZecBooks.
     name: ZecBooks
     # Free / source-available Mac app. Sparkle + site on zecbooks.app.
     domain: zecbooks.app
@@ -119,14 +119,14 @@ bundles:
       - sanevideo
     note: "One Lemon license key for current direct Mac Pro apps. App Store purchases are handled separately by Apple."
 
-# Domains to monitor for expiry (includes unreleased products)
+# Domains to monitor for expiry (includes unreleased products).
+# Registrable domains only — skip product subdomains such as sanescan.saneapps.com.
 all_domains:
   - sanebar.com
   - saneclip.com
   - saneclick.com
   - sanehosts.com
   - sanesales.com
-  - sanescan.saneapps.com
   - saneapps.com
   - sanesync.com
   - sanevideo.com

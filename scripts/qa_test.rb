@@ -47,6 +47,27 @@ class SaneProcessQATest < Minitest::Test
     assert_includes source, "capture_qa_command('ruby', hook_path, '--self-test', timeout: QA_SELF_TEST_TIMEOUT_SECONDS)"
   end
 
+  def test_global_claude_settings_have_no_bare_claude_env_interpolation
+    settings = File.read(File.expand_path('~/SaneApps/infra/SaneProcess/.claude/settings.json'), encoding: Encoding::UTF_8)
+
+    refute_match(/\$\{CLAUDECODE\}/, settings)
+    refute_match(/\$\{CLAUDE_CODE\}/, settings)
+    assert_includes settings, 'run_hook.sh session_start.rb'
+    assert_includes settings, 'run_hook.sh saneprompt.rb'
+    assert_includes settings, 'run_hook.sh sanetools.rb'
+    assert_includes settings, 'run_hook.sh sanetrack.rb'
+    assert_includes settings, 'run_hook.sh sanestop.rb'
+  end
+
+  def test_native_grok_hooks_register_shared_guards
+    grok_hooks = File.read(File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/grok/hooks.json'), encoding: Encoding::UTF_8)
+
+    assert_includes grok_hooks, 'run_terminal_command'
+    assert_includes grok_hooks, 'sane_catastrophic_guard.rb'
+    assert_includes grok_hooks, 'sane_bash_guards.rb'
+    assert_includes grok_hooks, 'sane_layout_guard.rb'
+  end
+
   def test_hook_registration_accepts_run_hook_wrapper
     source = File.read(File.join(__dir__, 'qa.rb'), encoding: Encoding::UTF_8)
 

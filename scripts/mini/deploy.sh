@@ -201,6 +201,7 @@ echo "Refreshing launch agents on mini..."
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh ]; then NIGHTLY_HOUR=8 NIGHTLY_MINUTE=45 SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh; fi"
 echo "Training agents are retired and are never installed by deploy.sh."
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh ]; then bash $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh; fi"
+mini_ssh "if [ -f \$HOME/SaneApps/infra/SaneProcess/scripts/hooks/session-guardian.sh ]; then bash \$HOME/SaneApps/infra/SaneProcess/scripts/hooks/session-guardian.sh --install; fi"
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-weekly-restart.sh ]; then bash $REMOTE_PRIMARY_DIR/mini-install-weekly-restart.sh; fi"
 configure_local_login_keychain
 

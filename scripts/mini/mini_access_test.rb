@@ -85,9 +85,43 @@ exit(run_tests('Mini Access Tests') do
     test('falls back to authenticated Tailscale') do
       _out, err, status, log = run_proxy(lan: false, tailscale: true)
       assert(status.success?, err)
-      assert_includes(log, 'tailscale ping -c 1 --timeout=5s stephans-mac-mini')
+      assert_includes(log, 'tailscale ping --until-direct=false -c 1 --timeout=5s stephans-mac-mini')
       assert_includes(log, 'tailscale nc stephans-mac-mini 22')
       true
+    end
+
+    test('uses HOME Tailscale wrapper when ProxyCommand PATH has no tailscale') do
+      Dir.mktmpdir('mini-access-wrapper-path') do |dir|
+        bin = File.join(dir, 'bin')
+        wrapper_dir = File.join(dir, '.local', 'bin')
+        log = File.join(dir, 'calls.log')
+        FileUtils.mkdir_p(bin)
+        FileUtils.mkdir_p(wrapper_dir)
+        write_executable(File.join(bin, 'nc'), <<~SH)
+          #!/bin/sh
+          echo "nc $*" >> "$PROXY_LOG"
+          [ "${1:-}" = "-z" ] && exit 1
+          exit 0
+        SH
+        write_executable(File.join(wrapper_dir, 'tailscale'), <<~SH)
+          #!/bin/sh
+          echo "tailscale $*" >> "$PROXY_LOG"
+          [ "${1:-}" = "ping" ] && exit 0
+          exit 0
+        SH
+        env = {
+          'HOME' => dir,
+          'PATH' => "#{bin}:/usr/bin:/bin",
+          'PROXY_LOG' => log
+        }
+        _out, err, status = Open3.capture3(env, '/bin/bash', PROXY)
+        assert(status.success?, err)
+        calls = File.read(log)
+        assert_includes(calls, 'tailscale ping --until-direct=false -c 1 --timeout=5s stephans-mac-mini')
+        assert_includes(calls, 'tailscale nc stephans-mac-mini 22')
+        assert(!calls.include?('--socket'), calls)
+        true
+      end
     end
 
     test('fails clearly when both private routes are unavailable') do

@@ -164,6 +164,7 @@ sudo tail -50 /var/log/sane-mini-weekly-restart.log
 | `mini-install-nightly-agent.sh` | On demand | Installs the nightly build/report agent |
 | `mini-nightly.sh` | 8:45 AM daily | Builds/tests active repos and writes the nightly report |
 | `mini-memory-guard.sh` | 5:40 AM daily on Mini | Restart-free hygiene with bounded deep cleanup |
+| `session-guardian.sh` | every 10 minutes on Air and Mini | Hook-layer guard — see hooks README Architecture table |
 | `mini-install-memory-guard.sh` | On demand | Mini: `com.saneapps.memory-guard`. Air: `com.saneapps.machine-cleanup` at 5:40 AM |
 | `mini-weekly-restart.sh` | Sunday retry windows | Root guarded weekly restart |
 | `mini-install-weekly-restart.sh` | On demand | Installs the root helper and LaunchDaemon |

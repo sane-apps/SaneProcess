@@ -19,7 +19,8 @@ chmod +x \
   "$ROOT/scripts/automation/run-saneclip-email-campaign.sh" \
   "$ROOT/scripts/automation/run-saneclick-email-campaign.sh" \
   "$ROOT/scripts/automation/agent-heartbeat.sh" \
-  "$ROOT/scripts/automation/pause-codex-heartbeats.sh"
+  "$ROOT/scripts/automation/pause-codex-heartbeats.sh" \
+  "$ROOT/scripts/hooks/session-guardian.sh"
 
 mkdir -p "$AGENTS_DIR" "$OUT"
 
@@ -252,5 +253,6 @@ launchctl bootout "gui/$(id -u)/com.saneapps.agent-heartbeat.ga-llc" 2>/dev/null
 launchctl bootstrap "gui/$(id -u)" "$AGENTS_DIR/com.saneapps.agent-heartbeat.ga-llc.plist"
 
 bash "$ROOT/scripts/automation/pause-codex-heartbeats.sh"
+bash "$ROOT/scripts/hooks/session-guardian.sh" --install
 
 echo "Recurring Mini LaunchAgents installed. See scripts/automation/recurring-jobs.md"

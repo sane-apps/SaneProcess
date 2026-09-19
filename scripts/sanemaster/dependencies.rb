@@ -135,9 +135,9 @@ module SaneMasterModules
       sop_mcps = {
         'apple-docs' => { package: '@mweinbach/apple-docs-mcp@1.3.1', required: true },
         'github' => { package: '@modelcontextprotocol/server-github@2025.4.8', required: true },
-        'context7' => { package: '@upstash/context7-mcp@3.2.3', required: false },
+        'context7' => { package: '@upstash/context7-mcp@4.0.5', required: false },
         'xcode' => { package: 'mcpbridge', required: true },
-        'macos-automator' => { package: '@steipete/macos-automator-mcp@0.4.5', required: true },
+        'macos-automator' => { package: '@steipete/macos-automator-mcp@0.4.7', required: true },
         'openaiDeveloperDocs' => { package: 'https://developers.openai.com/mcp', required: true }
       }
 

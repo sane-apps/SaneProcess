@@ -1723,6 +1723,29 @@ exit(run_tests('Validation report tests') do
       true
     end
 
+    test('flags home rules growth before delegation startup truncates') do
+      Dir.mktmpdir('validation-report-delegation-budget') do |tmpdir|
+        File.write(File.join(tmpdir, 'AGENTS.md'), ("home rule\n" * 5000))
+        FileUtils.mkdir_p(File.join(tmpdir, '.codex'))
+        File.write(File.join(tmpdir, '.codex', 'AGENTS.md'), ("codex rule\n" * 1500))
+
+        subject = ValidationReport.new
+        issues = []
+        warnings = []
+        subject.send(:check_home_delegation_budget, issues, warnings, tmpdir)
+
+        assert(issues.any? { |issue| issue.include?('delegation budget') })
+      end
+
+      subject = ValidationReport.new
+      issues = []
+      warnings = []
+      subject.send(:check_home_delegation_budget, issues, warnings)
+
+      assert(issues.empty?, "live home rules over delegation budget: #{issues.first}")
+      true
+    end
+
     test('flags SOP policy wording changes without an enforcement surface') do
       Dir.mktmpdir('validation-report-sop-policy') do |tmpdir|
         File.write(File.join(tmpdir, 'AGENTS.md'), "# Rules\n\nExisting guidance.\n")

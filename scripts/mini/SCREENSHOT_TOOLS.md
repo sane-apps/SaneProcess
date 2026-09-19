@@ -47,6 +47,7 @@ Then write `outputs/visual-audit-<ver>/customer_ui_action_receipt.json`:
   "status": "passed",
   "host": "stephans-mac-mini.local",
   "inspected": true,
+  "claims": [{ "id": "<what this proves>", "status": "passed", "screenshots": ["shot.png"] }],
   "screenshots": [{ "path": "shot.png", "view": "...", "result": "...", "inspected": true }],
   "generated_at": "<fresh UTC ISO8601>"
 }
@@ -54,6 +55,12 @@ Then write `outputs/visual-audit-<ver>/customer_ui_action_receipt.json`:
 
 `path` may be relative to the receipt's own directory. **Actually open and inspect the
 PNG** before writing `inspected: true` — do not fabricate a receipt.
+The gate (`scripts/hooks/core/visual_receipt.rb:84-120`) rejects a receipt with
+an empty `claims` array, so every receipt needs at least one claim with a
+`passed`/`pass`/`clean` status and screenshot paths that exist on disk.
+`audit_recorded: true` may stand in for `inspected: true`. Umbrella sessions
+running from `~/SaneApps` are covered: the gate also globs
+`apps/*/outputs/visual-audit*` receipts.
 
 ## macOS app-window / desktop screenshots → `capture-mini-screenshot.sh`
 
@@ -63,6 +70,50 @@ Use for native app windows, Finder menus and the Mini desktop:
 scripts/mini/capture-mini-screenshot.sh desktop --app "SaneBar" --window-name "Settings" --mode temp --copy-to <dir>
 scripts/mini/capture-mini-screenshot.sh desktop --copy-to <dir>
 ```
+
+If the wrapper reports "Screen Recording is not granted" (its direct route runs
+in the GUI runner/Terminal session, which may lack the grant), do NOT fall back
+to raw `screencapture` over ssh — use the Mini capture agent below instead.
+
+`capture-mini-screenshot.sh` refusals and modes (verbatim from the wrapper —
+expect these, do not work around them):
+
+- Bare `--active-window` with no explicit target: `Refusing Mini screenshot
+  capture with bare --active-window. That path often captures the automation
+  Terminal instead of the intended app window. Use --app/--window-name or
+  --window-id, then close Safari/Preview after the capture.` (exit 2)
+- `--full-screen` / `--out-dir`: `Unsupported Mini screenshot flag: $1. Use the
+  canonical desktop path instead: capture-mini-screenshot.sh desktop` (exit 2)
+- `--locked-evidence` without the expected helper hash:
+  `Locked screenshot evidence requires an expected helper hash.` (exit 1);
+  locked evidence also requires an exact Brave PID plus window title (or
+  `--preserve-frontmost` with no activation flags)
+- Video: `--video --duration N --out FILE` records via ffmpeg inside the Mini
+  GUI Terminal session; `--duration must be a positive integer number of
+  seconds`. Capture times out after 120s by default
+  (`MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS`): `Mini screenshot capture timed
+  out after ${timeout_seconds}s; inspect the Mini for a stuck GUI runner or
+  permission prompt.` On recording failure: `Mini screen recording failed. If
+  it is a permission error, grant Screen Recording to Terminal on the Mini
+  (this wrapper runs ffmpeg inside Terminal's session).`
+
+## Desktop capture via the Mini capture agent (verified 2026-09-17)
+
+Agent `com.saneapps.mini-screenshot` runs in the Mini GUI session (which holds
+the Screen Recording grant) and serves `~/.sane/capture-queue`: write
+`request-<id>.json`, poll `receipt-<id>.json`. From the Air:
+
+```bash
+ssh mini 'cat > ~/.sane/capture-queue/request-air1.json' <<'EOF'
+{"id": "air1", "args": ["desktop", "--skip-cleanup"]}
+EOF
+# poll up to ~2 min for ~/.sane/capture-queue/receipt-air1.json:
+# {"id","exit","png","error"} — exit 0 + png path = success, nonzero = stop, no retry loop
+scp mini:<png-from-receipt> <local-path>   # then inspect, then delete BOTH sides + receipt + request (queue must end empty)
+```
+
+Verified 2026-09-17: exit 0, valid 1920x1080 PNG (~393KB), queue left empty.
+Raw ssh `screencapture` stays blocked by `sane_bash_guards.rb` (wrong TCC identity).
 
 Capture the target in a healthy, unobstructed state and inspect the saved image.
 Use `--skip-cleanup desktop` to preserve an open menu or a blocking dialog for
@@ -105,7 +156,12 @@ Peekaboo 4.3.3 command map (Mini, verified 2026-09-08):
 | `peekaboo list windows --app NAME` | `peekaboo window list --app NAME` |
 | `peekaboo list menubar` | `peekaboo menubar list` |
 
-Raw ssh `peekaboo see/image/capture/list` is blocked. Run Peekaboo inside `mini-gui-run.sh`. Visual smoke hides the `SaneApps Automation:` Terminal runner window and does not count it as a dirty desktop.
+Raw ssh `peekaboo image/capture/list` is blocked by `sane_bash_guards.rb:68-72`.
+`peekaboo see` and `peekaboo click` over ssh are NOT blocked by the guard —
+still run Peekaboo inside `mini-gui-run.sh` (raw ssh Peekaboo runs under the
+wrong TCC identity), but that is guidance, not enforcement. Visual smoke hides
+the `SaneApps Automation:` Terminal runner window and does not count it as a
+dirty desktop.
 
 SaneClip history popover and NSMenu (Mini, Peekaboo 4.3.3, verified 2026-09-08):
 `peekaboo see --app SaneClip` / `--pid` keeps **layer 0** windows only. The

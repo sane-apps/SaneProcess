@@ -2,42 +2,60 @@
 
 require 'json'
 
-# Shared hook-payload parser for cross-client guard dispatch.
-#
-# Hook payloads arrive as JSON with string keys. Client tool names differ, so
-# guards must not assume a single shape: parse never raises and never returns
-# nil. Unparseable or unexpected payloads yield a blank record, which every
-# guard treats as "no command" and allows (same fail-open as an empty command).
+# Normalize Claude, Grok, Cursor, and Codex hook stdin into one shape.
+# Claude: tool_name / tool_input (Bash, Write, Edit)
+# Grok:   toolName / toolInput  (run_terminal_command, search_replace)
+# Cursor: command, or tool_name + input/arguments
 module SaneHookPayload
-  SHELL_TOOLS = %w[bash].freeze
-  EDIT_TOOLS = %w[write edit notebookedit strreplace writefile search_replace].freeze
+  SHELL_NAMES = %w[Bash run_terminal_command Shell].freeze
+  EDIT_NAMES = %w[
+    Write Edit MultiEdit NotebookEdit StrReplace WriteFile search_replace
+  ].freeze
 
   module_function
 
-  def parse(payload)
-    data = JSON.parse(payload.to_s)
+  def parse(source)
+    data = source.is_a?(Hash) ? source : JSON.parse(source.to_s)
     data = {} unless data.is_a?(Hash)
-    tool_input = data['tool_input']
-    tool_input = {} unless tool_input.is_a?(Hash)
+    input = nested_input(data)
+    name = data['tool_name'] || data['toolName'] || data.dig('tool', 'name') || ''
+    command = input['command'] || data['command']
+    path = input['file_path'] || input['path'] || input['filePath'] ||
+           input['target_file'] || input['target_notebook']
     {
-      'tool_name' => data['tool_name'].to_s,
-      'tool_input' => tool_input,
-      'command' => tool_input['command'].to_s,
-      'path' => tool_input['file_path'] || tool_input['path']
+      'raw' => data,
+      'tool_name' => name.to_s,
+      'tool_input' => input,
+      'command' => command.to_s,
+      'path' => path.to_s,
+      'cwd' => input['cwd'] || data['cwd']
     }
   rescue JSON::ParserError
-    blank
+    empty
   end
 
-  def blank
-    { 'tool_name' => '', 'tool_input' => {}, 'command' => '', 'path' => nil }
+  def shell?(name)
+    SHELL_NAMES.include?(name.to_s)
   end
 
-  def shell?(tool_name)
-    SHELL_TOOLS.include?(tool_name.to_s.downcase)
+  def edit?(name)
+    EDIT_NAMES.include?(name.to_s)
   end
 
-  def edit?(tool_name)
-    EDIT_TOOLS.include?(tool_name.to_s.downcase)
+  def empty
+    {
+      'raw' => {},
+      'tool_name' => '',
+      'tool_input' => {},
+      'command' => '',
+      'path' => '',
+      'cwd' => nil
+    }
+  end
+
+  def nested_input(data)
+    input = data['tool_input'] || data['toolInput'] || data['input'] ||
+            data['arguments']
+    input.is_a?(Hash) ? input : {}
   end
 end

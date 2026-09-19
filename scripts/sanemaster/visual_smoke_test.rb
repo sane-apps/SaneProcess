@@ -300,22 +300,27 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
               exit 0
             fi
             if [ "$1" = "see" ]; then
-              see_args="$*"
+              annotate=0
+              path=""
               while [ "$#" -gt 0 ]; do
+                if [ "$1" = "--annotate" ]; then
+                  annotate=1
+                fi
                 if [ "$1" = "--path" ]; then
                   shift
-                  printf 'png' > "$1"
-                  case " $see_args " in
-                    *" VisualSmokeTest "*)
-                      echo '{"success":false,"error":{"code":"WINDOW_NOT_FOUND","message":"post-capture failure"}}'
-                      exit 1
-                      ;;
-                  esac
-                  echo '{"data":{"path":"'"$1"'"}}'
-                  exit 0
+                  path="$1"
                 fi
                 shift
               done
+              if [ -n "$path" ]; then
+                printf 'png' > "$path"
+              fi
+              if [ "$annotate" = "1" ]; then
+                echo '{"success":false,"error":{"code":"WINDOW_NOT_FOUND","message":"post-capture failure"}}'
+                exit 1
+              fi
+              echo '{"data":{"path":"'"$path"'"}}'
+              exit 0
             fi
             exit 1
           SH
@@ -337,6 +342,17 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       true
     ensure
       subject.singleton_class.remove_method(:visual_smoke_cleanliness_issues) rescue nil
+    end
+
+    test('cleanliness ignores SaneApps Automation Terminal runner windows') do
+      source = File.read(File.expand_path('visual_smoke.rb', __dir__), encoding: Encoding::UTF_8)
+      cleanliness = source[/def visual_smoke_cleanliness_issues.*def visual_smoke_terminal_window_count/m].to_s
+      assert_includes(source, 'SaneApps Automation:')
+      assert_includes(source, 'if visible is false then return 0')
+      assert_includes(cleanliness, 'visual_smoke_hide_terminal')
+      assert(!cleanliness.include?('visual_smoke_close_terminal_host'),
+             'Mini cleanliness should hide Terminal, not quit the runner')
+      true
     end
 
     test('cleanliness check rejects visible stale apps and helper apps') do

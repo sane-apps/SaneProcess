@@ -31,6 +31,7 @@
 require 'digest'
 require 'json'
 require 'shellwords'
+require_relative 'core/hook_payload'
 require_relative '../testflight_artifact_proof'
 
 SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneScan SaneSync SaneVideo].freeze
@@ -231,10 +232,11 @@ rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end
 
-tool_name = input['tool_name']
-exit 0 unless tool_name == 'Bash'
+parsed = SaneHookPayload.parse(input)
+tool_name = parsed['tool_name']
+exit 0 unless SaneHookPayload.shell?(tool_name) || (tool_name.empty? && !parsed['command'].empty?)
 
-command = (input['tool_input'] || {})['command'].to_s
+command = parsed['command']
 exit 0 if command.empty?
 
 canonical_release_command = single_canonical_command?(command, /\A\s*(?:bash\s+|sh\s+)?(?:\S+\/)?(?:full_)?release\.sh\b/)

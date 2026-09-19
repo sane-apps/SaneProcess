@@ -424,6 +424,15 @@
       ]
     },
     {
+      "path": "scripts/hooks/session_guardian_test.rb",
+      "label": "SaneProcess session guardian CPU watch tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/hooks/session_guardian_test.rb"
+      ]
+    },
+    {
       "path": "scripts/hooks/core/sop_score_test.rb",
       "label": "SaneProcess shared SOP scoring tests",
       "status": "required",

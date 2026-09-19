@@ -41,6 +41,37 @@ _, grok_release_err, grok_release_status = run_ruby_hook(
 )
 t('Grok hook event still enforces high-risk release guard', grok_release_status.exitstatus == 2)
 t('Grok release block explains canonical release path', grok_release_err.include?('release.sh'))
+grok_camel_payload = {
+  'toolName' => 'run_terminal_command',
+  'toolInput' => { 'command' => 'create-dmg SaneBar' }
+}
+_, grok_camel_err, grok_camel_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  grok_camel_payload,
+  { 'GROK_HOOK_EVENT' => 'pre_tool_use' }
+)
+t('Grok camelCase shell payload still blocks ad-hoc DMG', grok_camel_status.exitstatus == 2)
+t('Grok camelCase release block names create-dmg', grok_camel_err.include?('Ad-hoc DMG'))
+_, grok_bash_camel_err, grok_bash_camel_status = run_ruby_hook(
+  'sane_bash_guards.rb',
+  grok_camel_payload,
+  { 'GROK_HOOK_EVENT' => 'pre_tool_use' }
+)
+t('Grok camelCase payload reaches bash guards', grok_bash_camel_status.exitstatus == 2)
+t('Grok camelCase bash guard is the release family', grok_bash_camel_err.include?('Ad-hoc DMG') || grok_bash_camel_err.include?('create-dmg'))
+_, grok_cat_status_out, grok_cat_status = run_ruby_hook(
+  'sane_catastrophic_guard.rb',
+  {
+    'toolName' => 'run_terminal_command',
+    'toolInput' => { 'command' => 'rm -rf /Users/sj/SaneApps' }
+  },
+  { 'GROK_HOOK_EVENT' => 'pre_tool_use' }
+)
+t('Grok camelCase payload reaches catastrophic guard', grok_cat_status.exitstatus == 2)
+native_grok_hooks = File.read(File.join(HOOK_DIR, 'grok', 'hooks.json'))
+t('Native Grok hooks register camelCase shell matcher', native_grok_hooks.include?('run_terminal_command'))
+t('Native Grok hooks call catastrophic guard directly', native_grok_hooks.include?('sane_catastrophic_guard.rb'))
+t('Native Grok hooks call bash guards directly', native_grok_hooks.include?('sane_bash_guards.rb'))
 _, grok_session_err, grok_session_status = run_ruby_hook(
   'sane_release_guard.rb',
   dangerous_release_payload,

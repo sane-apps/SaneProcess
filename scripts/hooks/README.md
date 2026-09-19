@@ -1,8 +1,18 @@
 # SaneProcess Hooks
 
-Production-ready Claude-native hooks for SaneProcess SOP enforcement.
+Shared SaneProcess SOP and safety hooks. Regular clients are Grok and Cursor.
+Claude and Codex keep their own hook registrations as compatibility adapters.
 
-For Codex and other clients, treat these as one layer of the system, not the whole system. The stable cross-client path is `AGENTS.md`, repo skills, MCP, `SaneMaster.rb`, and shared shell/script guards.
+Safety guards (`sane_catastrophic_guard.rb`, `sane_bash_guards.rb`, release /
+ship / email / launch / layout) parse Claude snake_case, Grok camelCase, and
+Cursor shell payloads through `core/hook_payload.rb`.
+
+| Client | Registration |
+|--------|----------------|
+| Grok | `~/.grok/hooks/sane-guards.json` from `scripts/hooks/grok/hooks.json`. Claude/Cursor hook import is off (`compat.*.hooks = false`). |
+| Cursor | `~/.cursor/hooks.json` from `scripts/hooks/cursor/hooks.json.example`. |
+| Claude | `.claude/settings.json` via `run_hook.sh` for SOP hooks, plus the shared guards. |
+| Codex | Existing Codex hook adapters. Shell guards still fire when Codex sends `tool_name=Bash`. |
 
 ## Architecture
 
@@ -11,6 +21,7 @@ file:
 
 | Hook | Type | Purpose |
 |------|------|---------|
+| `session-guardian.sh` | LaunchAgent, 10 min | Reap dead-parent MCP leftovers; page Air on sustained unexpected CPU |
 | `session_start.rb` | SessionStart | Bootstraps session, resets stale state, prints briefing |
 | `saneprompt.rb` | UserPromptSubmit | Classifies prompts and handles commands (`rb-`, `s+`, etc.) |
 | `sanetools.rb` | PreToolUse | Gates edits on research, blocks risky paths/routes, trips circuit breaker |
@@ -34,7 +45,6 @@ ruby scripts/hooks/gui_feedback_test.rb
 ruby scripts/hooks/test_hooks.rb
 ruby scripts/hooks/session_docs_test.rb
 ruby scripts/hooks/grok_and_security_guard_test.rb
-ruby scripts/hooks/test_hooks.rb
 ```
 
 Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused commands above are the hook-layer slices.
@@ -48,7 +58,6 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 | `s+` | Enable safemode (blocks edits) |
 | `s-` | Disable safemode |
 | `s?` | Show safemode status |
-| `research` | Show research progress |
 
 ## Support Modules
 
@@ -130,9 +139,9 @@ Before edits allowed, complete the always-required categories plus any MCP-backe
 
 | Category | Satisfied by | Required? |
 |----------|--------------|-----------|
-| docs | `mcp__context7__*`, `mcp__apple-docs__*` | If docs MCPs configured |
+| docs | `mcp__apple-docs__*` (`context7` is toggled off, not callable) | If docs MCPs configured |
 | web | `WebSearch`, `WebFetch` | Always |
-| github | `mcp__github__*` | If GitHub MCP configured |
+| github | `gh` skill (`mcp__github__*` no longer gates research) | If GitHub work configured |
 | local | `Read`, `Grep`, `Glob` | Always |
 
 ## Circuit Breaker
@@ -142,6 +151,34 @@ Trips at:
 - 2x same error signature (even with successes between)
 
 Reset with `rb-` command.
+
+## Bash-Boundary Blocks
+
+`sane_bash_guards.rb` blocks these at the Bash boundary (exit 2, no override).
+Agents hit these cold — read the block message and use the canonical path.
+
+| Block | Code | Use instead |
+|---|---|---|
+| Destructive `security` keychain mutations (`add-*-password -U`, `delete-*`, `set-*-partition-list`; reads stay allowed) | `sane_bash_guards.rb:308-355` | Run it in your own terminal; never from the agent |
+| Detached Mini QA via `launchctl submit` (`run_sanebar_qa`, `Scripts/qa.rb`, `SANEBAR_RUN_RUNTIME_SMOKE`, `SaneMaster.rb release_preflight`) | `sane_bash_guards.rb:96-106` | Foreground canonical release/runtime commands |
+| Safari automation, including `mini-safari.sh` (`osascript tell … "Safari"`, `open -a Safari`) | `sane_bash_guards.rb:366-403` | Brave on the Mini |
+| Raw remote screen capture (`screencapture`, `peekaboo image`/`capture`/`list`, `ffmpeg` + `avfoundation` over ssh) | `sane_bash_guards.rb:68-94` | `mini-gui-run.sh` / `capture-mini-screenshot.sh` |
+
+## Local-UI Guard (Air)
+
+On the Air, `core/local_ui_guard.rb:97-153` blocks three things: editing
+`SaneApps/apps/*` source, `pbcopy`/`pbpaste` (Universal Clipboard contaminates
+the Mini's Clip history), and driving SaneApps UI / Peekaboo / HID locally.
+Use `ssh mini` and `mini-gui-run.sh` on the Mini. The ONLY fallback after
+explicit owner approval prefixes the shell command (an `export` inside the
+command does not count) or sets hook-process env:
+
+```bash
+SANE_APPROVE_LOCAL_UI_ON_AIR='MR. SANE APPROVES LOCAL UI ON AIR' …
+SANE_MINI_UNAVAILABLE='MR. SANE CONFIRMS MINI UNAVAILABLE' …
+```
+
+The phrases must match exactly (`core/local_ui_guard.rb:20-21,44-67`).
 
 ## Files
 
@@ -154,11 +191,8 @@ Reset with `rb-` command.
 
 ## Testing
 
-Run the full test suite:
-```bash
-ruby scripts/hooks/test_hooks.rb
-ruby scripts/SaneMaster.rb verify
-```
+Hook-layer commands live in Quick Start above. Full verification remains
+`ruby scripts/SaneMaster.rb verify`.
 
 ## Cursor GUI feedback
 
@@ -166,6 +200,13 @@ Permanent owner rule (2026-07-29): after GUI/portal mutations, re-read dialog/pa
 
 Shared logic: `scripts/hooks/core/gui_feedback.rb`  
 Tests: `ruby scripts/hooks/gui_feedback_test.rb`
+
+**Conversation scope (2026-09-02):** pending state is per Cursor `conversation_id`
+under `~/.cursor/sane_gui_feedback/<id>.json`. The old global
+`~/.cursor/sane_gui_feedback.json` is retired (`legacy_disabled`) so a T&Z Mini
+session cannot inject stop follow-ups into unrelated chats. Stop with a missing
+`conversation_id` never follows up. Bare System Events AX reads and `simctl`
+screenshots count as feedback polls, not mutations.
 
 Install Cursor adapters on the controller (Air):
 
@@ -175,4 +216,5 @@ cp scripts/hooks/cursor/gui_feedback_after_shell.rb ~/.cursor/hooks/
 cp scripts/hooks/cursor/gui_feedback_stop.rb ~/.cursor/hooks/
 chmod +x ~/.cursor/hooks/gui_feedback_*.rb
 # Merge hooks.json.example into ~/.cursor/hooks.json (afterShellExecution + stop)
+# Prefer pointing hooks.json at the repo adapters so conversation_id wiring stays current.
 ```
