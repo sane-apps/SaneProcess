@@ -44,6 +44,8 @@ Keep these rules concrete and replaceable so the repo is not tied to one AI clie
 
 ## Client Notes
 
-- Claude: native lifecycle hooks live in `.claude/settings.json`.
-- Codex / Grok / others: canonical shared skills live under `.agents/skills/` (installed via `SaneProcess/scripts/init.sh --client codex|grok`); each client also has its own native skill/config surface.
+- Grok / Grokbot: native hooks live in `~/.grok/hooks`.
+- Cursor: native hooks live in `~/.cursor/hooks.json`.
+- Claude: native lifecycle hooks live in `.claude/settings.json` (compatibility overlay).
+- Shared skills live under `.agents/skills/` (installed via `SaneProcess/scripts/init.sh --client grok|codex`); each client also has its own native skill/config surface. Codex is a compatibility lane, not the regular client.
 - Everyone: shared safety and SOP checks should be enforced through repo scripts, MCP, git hooks, and shell guards rather than client-specific magic. AGENTS.md is the portable contract.

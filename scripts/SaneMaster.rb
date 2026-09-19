@@ -2182,6 +2182,7 @@ PY
       work_session_status
     when 'server_acceptance', 'server-acceptance', 'air_mini_acceptance', 'air-mini-acceptance'
       system('/opt/homebrew/opt/ruby/bin/ruby', File.join(__dir__, 'automation', 'air_mini_acceptance.rb'), *args)
+      exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
     when 'agentmemory_watch', 'agentmemory-watch', 'memory_watch', 'memory-watch'
       system('/bin/bash', File.join(__dir__, 'automation', 'run-agentmemory-watch.sh'), *args)
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?

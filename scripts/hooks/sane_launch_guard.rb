@@ -166,8 +166,7 @@ end
 
 if command.match?(LOCAL_DASHBOARD_OPEN_PATTERN) &&
    running_on_macbook_air? &&
-   ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] != LOCAL_UI_APPROVAL &&
-   ENV['SANE_MINI_UNAVAILABLE'] != MINI_UNAVAILABLE_APPROVAL
+   !SaneLocalUIGuard.approved_local_ui?(command)
   warn '🔴 BLOCKED: Mini-first SaneApps dashboard/file open'
   warn "   Command: #{command}"
   warn ''
@@ -175,6 +174,7 @@ if command.match?(LOCAL_DASHBOARD_OPEN_PATTERN) &&
   warn '      App Store Connect, and other dashboards; Mini Finder for release upload artifacts.'
   warn '      Never script Safari (owner retired the ASC Safari exception 2026-07-15).'
   warn "     ssh mini 'open -R /path/on/mini'"
+  warn "   Fallback: prefix with SANE_APPROVE_LOCAL_UI_ON_AIR='#{LOCAL_UI_APPROVAL}'"
   exit 2
 end
 

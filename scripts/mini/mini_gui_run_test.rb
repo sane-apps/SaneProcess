@@ -211,6 +211,8 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(screenshot_wrapper_source, 'LOCAL_SCREENSHOT_HELPER_DIR')
       assert_includes(screenshot_wrapper_source, 'resolved_mini_host="$(resolve_mini_host "$MINI_HOST")"')
       assert_includes(screenshot_wrapper_source, 'Could not reach the canonical Mini host.')
+      refute_includes(screenshot_wrapper_source, '-o ConnectTimeout=2',
+                      'Do not override Host mini ConnectTimeout; the LAN→Tailscale proxy needs the ssh config 15s')
       assert_includes(screenshot_wrapper_source, 'rsync -az "$LOCAL_SKILL_DIR/" "${resolved_mini_host}:${REMOTE_HELPER_DIR}/"')
       assert_includes(screenshot_wrapper_source, 'ssh "$host" "$runner"')
       assert_includes(screenshot_wrapper_source, 'run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$runner_cmd"')
