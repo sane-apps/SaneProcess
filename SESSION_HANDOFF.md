@@ -4,6 +4,12 @@ As of: 2026-08-17 America/New_York
 Owner host: Mac Mini = tree truth; Air = controller.
 Repo: `~/SaneApps/infra/SaneProcess`
 
+## 2026-09-19 evolve (Mini Grok)
+
+- Firecrawl CLI is shared Mini+Air, pin 1.23.3.
+- AgentMemory MCP wrapper talks to Mini loopback `:3111` (`agentmemory mcp --no-engine`). Cloud Access is `--login` / `AGENTMEMORY_MCP_FORCE_CLOUD=1` only.
+- Peekaboo 4.4.0 is a Mini binary install from the GitHub tarball; brew still cannot keg-upgrade without Xcode 27.
+
 ## 2026-08-17 locked Mini screenshot evidence lane
 
 - `capture-mini-screenshot.sh --locked-evidence` now preserves nonzero helper

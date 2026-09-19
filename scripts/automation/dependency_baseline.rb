@@ -30,14 +30,16 @@ module SaneAppsDependencyBaseline
     air: [],
     mini: %w[pango]
   }.freeze
+  # firecrawl-cli is shared: Grok TUI runs on Mini as well as Air.
   SHARED_NPM = %w[
     @modelcontextprotocol/sdk
     @modelcontextprotocol/server-github
     @mweinbach/apple-docs-mcp
     @steipete/macos-automator-mcp
+    firecrawl-cli
   ].freeze
   ROLE_NPM = {
-    air: %w[@upstash/context7-mcp firecrawl-cli @google/gemini-cli],
+    air: %w[@upstash/context7-mcp @google/gemini-cli],
     mini: %w[@agentmemory/agentmemory playwright]
   }.freeze
   NPM_VERSIONS = {
@@ -48,7 +50,7 @@ module SaneAppsDependencyBaseline
     '@mweinbach/apple-docs-mcp' => '1.3.1',
     '@steipete/macos-automator-mcp' => '0.4.5',
     '@upstash/context7-mcp' => '3.2.3',
-    'firecrawl-cli' => '1.19.26',
+    'firecrawl-cli' => '1.23.3',
     'playwright' => '1.61.1'
   }.freeze
   # Node's Homebrew LTS bottle supplies the matching npm. A separately updated

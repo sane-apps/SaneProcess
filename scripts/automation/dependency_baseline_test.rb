@@ -44,8 +44,14 @@ assert(SaneAppsDependencyBaseline::FORBIDDEN_GLOBAL_NPM.include?('npm'),
        'Node LTS must use its bundled npm to prevent CLI drift')
 assert(SaneAppsDependencyBaseline.npm_packages(:mini).include?('playwright'),
        'Mini browser dependency missing')
+assert(SaneAppsDependencyBaseline.npm_packages(:mini).include?('firecrawl-cli'),
+       'Mini Grok research CLI missing')
+assert(SaneAppsDependencyBaseline.npm_packages(:air).include?('firecrawl-cli'),
+       'Air Firecrawl CLI missing after shared move')
 assert(SaneAppsDependencyBaseline.npm_packages(:air).include?('@upstash/context7-mcp'),
        'Air research dependency missing')
+assert(SaneAppsDependencyBaseline::NPM_VERSIONS['firecrawl-cli'] == '1.23.3',
+       'Firecrawl CLI pin drifted')
 assert(SaneAppsDependencyBaseline::NODE_BIN.end_with?('/node@24/bin'),
        'Node LTS executable path drifted')
 assert(SaneAppsDependencyBaseline.formulae(:mini).include?('pango'),

@@ -6,6 +6,8 @@ that get installed into `~/.grok/bin/` (or surfaced via PATH / completions for G
 Files (initial):
 
 - `README.md` — this file
+- `check-mcps` — live Grok MCP probe
+- `agentmemory-mcp-remote.sh` — daily AgentMemory MCP talks to the Mini worker on loopback `:3111` (`agentmemory mcp --no-engine`). Cloud Access is `--login` or `AGENTMEMORY_MCP_FORCE_CLOUD=1` only and must not hang session start.
 - Future thin shims will live here (MCP probes, SaneMaster convenience wrappers, Grok-specific status helpers, etc.)
 
 Do not edit only `~/.grok/bin/*` and call it done.
