@@ -52,7 +52,7 @@ end
 def parse_env_file(path)
   return unless File.file?(path)
 
-  File.foreach(path) do |line|
+  File.read(path, mode: 'r:UTF-8', invalid: :replace, undef: :replace).each_line do |line|
     next if line.strip.empty? || line.lstrip.start_with?('#')
 
     text = line.sub(/\A\s*export\s+/, '').strip
@@ -195,7 +195,7 @@ ACCESSIBILITY_FAMILIES_BY_PLATFORM = {
   'IOS' => %w[IPHONE IPAD APPLE_TV APPLE_WATCH VISION]
 }.freeze
 
-IAP_DEFAULT_USD_PRICE = '6.99'
+IAP_DEFAULT_USD_PRICE = '14.99'
 IAP_DEFAULT_REVIEW_NOTE = 'One-time Pro unlock. Purchase unlocks advanced features immediately.'
 IAP_LOCALIZATION_NAME_MAX = 30
 IAP_LOCALIZATION_DESCRIPTION_MAX = 45
@@ -1231,46 +1231,6 @@ end
 
 # ─── App Version Management ───
 
-APP_STORE_AUTOMATIC_RELEASE_TYPE = 'AFTER_APPROVAL'.freeze
-
-def ensure_automatic_app_store_release(version, token)
-  version_id = version&.fetch('id', nil).to_s
-  if version_id.empty?
-    log_error 'Cannot enforce automatic App Store release without a version ID.'
-    return false
-  end
-
-  current_type = version.dig('attributes', 'releaseType').to_s
-  return true if current_type == APP_STORE_AUTOMATIC_RELEASE_TYPE
-
-  body = {
-    data: {
-      type: 'appStoreVersions',
-      id: version_id,
-      attributes: { releaseType: APP_STORE_AUTOMATIC_RELEASE_TYPE }
-    }
-  }
-  updated = asc_patch("/appStoreVersions/#{version_id}", body: body, token: token)
-  unless updated
-    log_error "Failed to set App Store version #{version_id} to automatic release after approval."
-    return false
-  end
-
-  updated_type = updated.dig('data', 'attributes', 'releaseType').to_s
-  if updated_type.empty?
-    readback = asc_get("/appStoreVersions/#{version_id}", token: token)
-    updated_type = readback&.dig('data', 'attributes', 'releaseType').to_s
-  end
-
-  unless updated_type == APP_STORE_AUTOMATIC_RELEASE_TYPE
-    log_error "App Store version #{version_id} release mode read-back was #{updated_type.empty? ? 'missing' : updated_type}; expected #{APP_STORE_AUTOMATIC_RELEASE_TYPE}."
-    return false
-  end
-
-  log_info "App Store version #{version_id} will release automatically after approval."
-  true
-end
-
 def find_editable_version(app_id, asc_platform, version_string, token)
   # Look for an editable version.
   # READY_FOR_REVIEW still accepts metadata/screenshot updates in ASC for some flows.
@@ -1917,8 +1877,6 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
   version = find_editable_version(app_id, asc_platform, version_string, token)
   if version
     log_info "Found existing version #{version_string} (#{version.dig('attributes', 'appStoreState')})"
-    return nil unless ensure_automatic_app_store_release(version, token)
-
     return version['id']
   end
 
@@ -1934,8 +1892,6 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
     end
     if already_submitted
       state = already_submitted.dig('attributes', 'appStoreState')
-      return nil unless ensure_automatic_app_store_release(already_submitted, token)
-
       log_info "Version #{version_string} is already #{state} — nothing to do."
       return :already_submitted
     end
@@ -1948,8 +1904,7 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
       type: 'appStoreVersions',
       attributes: {
         platform: asc_platform,
-        versionString: version_string,
-        releaseType: APP_STORE_AUTOMATIC_RELEASE_TYPE
+        versionString: version_string
       },
       relationships: {
         app: {
@@ -1961,11 +1916,6 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
 
   resp = asc_post('/appStoreVersions', body: body, token: token)
   if resp && resp.dig('data', 'id')
-    unless ensure_automatic_app_store_release(resp['data'], token)
-      log_error "Created version #{version_string}, but automatic release verification failed."
-      return nil
-    end
-
     log_info "Created version #{version_string} (ID: #{resp['data']['id']})"
     resp['data']['id']
   else
@@ -3061,6 +3011,9 @@ end
 def resolve_iap_price_usd(config, options)
   explicit = options[:iap_price_usd].to_s.strip
   return explicit unless explicit.empty?
+
+  nested = config.dig('appstore', 'iap', 'price_usd').to_s.strip
+  return nested unless nested.empty?
 
   configured = config.dig('appstore', 'iap_price_usd').to_s.strip
   return configured unless configured.empty?
@@ -5016,7 +4969,7 @@ OptionParser.new do |opts|
   opts.on('--skip-screenshots', 'Skip screenshot upload; use screenshots already present in ASC') { options[:skip_screenshots] = true }
   opts.on('--screenshots-only', 'Upload screenshots to an existing ASC version (no upload, no build attach, no submission)') { options[:screenshots_only] = true }
   opts.on('--iap-only', 'Ensure configured IAP or explicit no-IAP policy is ready and exit') { options[:iap_only] = true }
-  opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 6.99)') { |v| options[:iap_price_usd] = v }
+  opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 14.99; also reads appstore.iap.price_usd)') { |v| options[:iap_price_usd] = v }
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--repair-version-state', 'Attempt ASC lane repair before version-state preflight') { options[:repair_version_state] = true }
   opts.on('--withdraw-version VERSION', 'Withdraw an existing ASC app version lane (clears submission + linked review submission)') { |v| options[:withdraw_version] = v }

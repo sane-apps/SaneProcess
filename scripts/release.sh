@@ -1872,13 +1872,19 @@ except json.JSONDecodeError as exc:
 
 app_name = os.environ.get("APP_NAME", "")
 expected_version = os.environ.get("EXPECTED_VERSION", "")
-actions = [
-    action for action in payload.get("current_actions", [])
-    if action.get("app") == app_name and str(action.get("expected_version", "")) == expected_version
-]
-
-if not actions:
+rows = [row for row in payload.get("snapshot", []) if row.get("app") == app_name]
+if len(rows) != 1:
+    print(f"{app_name}: missing or ambiguous hosted-file snapshot; update is not verified")
+    sys.exit(1)
+row = rows[0]
+if (row.get("status") == "In sync" and row.get("expected_version") == expected_version
+        and row.get("hosted_version") == expected_version and row.get("variant_id")
+        and int(row.get("published_file_count", 0)) > 0):
     sys.exit(0)
+actions = [action for action in payload.get("current_actions", []) if action.get("app") == app_name]
+if not actions:
+    print(f"{app_name}: no affirmative published-file evidence for {expected_version}")
+    sys.exit(1)
 
 for action in actions:
     print(
@@ -1901,7 +1907,7 @@ PY
     set -e
 
     if [ "${action_status}" -eq 0 ]; then
-        log_info "Lemon Squeezy hosted file verified for ${APP_NAME} v${VERSION}."
+        log_info "Lemon Squeezy published-file metadata matches ${APP_NAME} v${VERSION}; byte/runtime proof is separate."
         log_info "Hosted-file receipt: ${receipt_path}"
         return 0
     fi
