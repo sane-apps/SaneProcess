@@ -31,6 +31,7 @@ require 'socket'
 require 'digest'
 require 'etc'
 require 'rbconfig'
+require_relative 'runtime_log'
 
 APPS = {
   'SaneBar' => {
@@ -92,7 +93,8 @@ class SaneTest
     @config = APPS[app_name]
     @raw_args = args.dup
     @force_local = args.include?('--local')
-    @no_logs = args.include?('--no-logs')
+    @no_logs = args.include?('--no-logs') || args.include?('--quiet-logs')
+    @log_seconds = SaneRuntimeLog.duration(args)
     @free_mode = args.include?('--free-mode')
     @pro_mode = args.include?('--pro-mode')
     @reset_tcc = args.include?('--reset-tcc')
@@ -204,7 +206,10 @@ class SaneTest
       step("#{n += 1}. Verify explicit Mini sync is safe") do
         assert_remote_sync_safe!(@app_dir, remote_app_dir)
       end
-      step("#{n += 1}. Sync SaneProcess launcher to mini") { sync_file_to_mini(__FILE__, remote_script_path) }
+      step("#{n += 1}. Sync SaneProcess launcher to mini") do
+        sync_file_to_mini(__FILE__, remote_script_path)
+        sync_file_to_mini(File.join(__dir__, 'runtime_log.rb'), File.join(remote_saneprocess_dir, 'scripts', 'runtime_log.rb'))
+      end
       step("#{n += 1}. Sync app workspace to mini") { sync_repo_to_mini(@app_dir, remote_app_dir) }
     else
       step("#{n += 1}. Verify canonical Mini app checkout") do
@@ -496,14 +501,6 @@ class SaneTest
     warn "   Running (PID: #{pid})"
   end
 
-  def stream_logs_remote
-    puts ''
-    puts '📡 Streaming logs from mini (Ctrl+C to stop)...'
-    puts '─' * 60
-    Kernel.exec('ssh', '-o', 'ServerAliveInterval=30', MINI_HOST, 'log', 'stream', '--predicate',
-                "subsystem BEGINSWITH \"#{@config[:log_subsystem]}\"", '--info', '--debug', '--style', 'compact')
-  end
-
   # ── Local workflow ──────────────────────────────────────────
 
   def run_local
@@ -522,9 +519,16 @@ class SaneTest
     # non-canonical bundle must run AFTER re-signing, and before launch.
     step("#{n += 1}. Re-sign with Developer ID (preserve TCC)") { ensure_developer_id_signature_local }
     step("#{n += 1}. Enforce single runtime copy") { enforce_single_copy_local }
-    step("#{n += 1}. Launch locally") { launch_local }
-    print_air_ui_test_hints_local
-    stream_logs_local unless @no_logs
+    runtime_log = start_runtime_log
+    begin
+      step("#{n += 1}. Launch locally") { launch_local }
+      runtime_log.launched!(local_app_processes(canonical_local_app_path).map { |line| line.split.first.to_i })
+      launched = true
+      print_air_ui_test_hints_local
+      @no_logs ? runtime_log.detach : runtime_log.follow
+    ensure
+      runtime_log.stop unless launched && @no_logs
+    end
   end
 
   # A local debug build is signed with an Apple Development cert, NOT the
@@ -1497,12 +1501,9 @@ class SaneTest
     bundle_id
   end
 
-  def stream_logs_local
-    puts ''
-    puts '📡 Streaming logs (Ctrl+C to stop)...'
-    puts '─' * 60
-    Kernel.exec('log', 'stream', '--predicate',
-                "subsystem BEGINSWITH \"#{@config[:log_subsystem]}\"", '--info', '--debug', '--style', 'compact')
+  def start_runtime_log
+    SaneRuntimeLog.new(project_dir: @app_dir, app_name: @app_name,
+                       subsystem: @config[:log_subsystem], seconds: @log_seconds || 1800).start
   end
 
   # ── License Mode ─────────────────────────────────────────────
@@ -2018,7 +2019,8 @@ if __FILE__ == $PROGRAM_NAME
     warn ''
     warn 'Options:'
     warn '  --local      Force local testing (skip mini even if reachable)'
-    warn '  --no-logs    Skip log streaming after launch'
+    warn '  --quiet-logs Save live logs without following the console (--no-logs is an alias)'
+    warn '  --log-seconds N  Capture deadline in seconds (default 1800, maximum 21600)'
     warn '  --fresh      Wipe ALL state (App Support, UserDefaults, TCC, license) — true first launch'
     warn '  --free-mode  Clear fallback license data — launch as Free user'
     warn '  --pro-mode   Write fallback Pro marker — launch in Pro mode'

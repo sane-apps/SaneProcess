@@ -29,6 +29,7 @@ module SaneMasterModules
     TEMPLATE_DIR = File.expand_path('~/.sanemaster/templates')
     WORK_SESSION_STATE_FILE = File.expand_path('~/.sanemaster/work_session_state.json')
     WORK_SESSION_CAFFEINATE_PID_FILE = File.expand_path('~/.sanemaster/work_session_caffeinate.pid')
+    WORK_SESSION_DURATION = 12 * 60 * 60
     WORK_SESSION_CAFFEINATE_LOG = File.expand_path('~/.sanemaster/work_session_caffeinate.log')
     WORK_SESSION_RESTART_INHIBIT = File.expand_path('~/.sanemaster/restart-inhibit')
     SERVER_MAINTENANCE_ACTIVE_DIR = File.expand_path('~/.sanemaster/maintenance-active')
@@ -470,9 +471,7 @@ module SaneMasterModules
       acquire_server_maintenance_holder!
       FileUtils.touch(WORK_SESSION_RESTART_INHIBIT)
 
-      activate_work_session_caffeinate
-      capture_work_session_defaults unless File.exist?(WORK_SESSION_STATE_FILE)
-      apply_work_session_defaults
+      raise 'Work-session protection could not be started' unless activate_work_session_caffeinate
     end
 
     def acquire_server_maintenance_holder!
@@ -499,7 +498,9 @@ module SaneMasterModules
 
     def work_session_off
       puts '🔓 --- [ WORK SESSION OFF ] ---'
-      restore_work_session_defaults
+      if File.exist?(WORK_SESSION_STATE_FILE)
+        warn "Saved legacy lock preferences left unchanged: #{WORK_SESSION_STATE_FILE}"
+      end
       stop_work_session_caffeinate
       FileUtils.rm_f(WORK_SESSION_RESTART_INHIBIT)
       print_work_session_status
@@ -517,42 +518,108 @@ module SaneMasterModules
     end
 
     def activate_work_session_caffeinate
-      existing_pid = read_work_session_caffeinate_pid
-      return if existing_pid && process_alive?(existing_pid)
+      pid = identity = nil
+      with_work_session_lock do
+        previous = read_work_session_record
+        pid = Process.spawn('/usr/bin/nice', '-n', '10', '/usr/bin/caffeinate',
+                            '-dimsu', '-t', WORK_SESSION_DURATION.to_s,
+                            in: File::NULL, out: [WORK_SESSION_CAFFEINATE_LOG, 'a'], err: [:child, :out], pgroup: true)
+        Process.detach(pid)
+        identity = nil
+        20.times do
+          identity = work_session_process_identity(pid)
+          break if identity && identity['executable'] == '/usr/bin/caffeinate' && work_session_assertions_ready?(pid)
+          sleep 0.05
+        end
+        unless identity && identity['executable'] == '/usr/bin/caffeinate' && work_session_assertions_ready?(pid)
+          raise 'unable to confirm owned caffeinate assertions'
+        end
 
-      FileUtils.rm_f(WORK_SESSION_CAFFEINATE_PID_FILE)
-      cmd = [
-        '/bin/sh', '-lc',
-        "nohup /usr/bin/caffeinate -dimsu >> #{Shellwords.escape(WORK_SESSION_CAFFEINATE_LOG)} 2>&1 & echo $! > #{Shellwords.escape(WORK_SESSION_CAFFEINATE_PID_FILE)}"
-      ]
-      ok = system(*cmd, out: File::NULL, err: File::NULL)
-      pid = read_work_session_caffeinate_pid
-      raise 'unable to confirm caffeinate pid' unless ok && pid
-
-      sop_log("Started work-session caffeinate pid=#{pid}")
+        record = identity.merge('pid' => pid, 'expires_at' => (Time.now + WORK_SESSION_DURATION).utc.iso8601)
+        temporary = "#{WORK_SESSION_CAFFEINATE_PID_FILE}.#{Process.pid}"
+        File.write(temporary, JSON.generate(record), mode: 'w', perm: 0o600)
+        File.rename(temporary, WORK_SESSION_CAFFEINATE_PID_FILE)
+        # Replacement exists before the prior assertion is released.
+        terminate_work_session_process(previous)
+        sop_log("Started work-session caffeinate pid=#{pid} expires=#{record['expires_at']}")
+      end
+      true
     rescue StandardError => e
-      warn "⚠️  Failed to start work-session caffeinate: #{e.message}"
+      terminate_work_session_process(identity.merge('pid' => pid)) if identity && pid
+      warn "⚠️  Work-session protection renewal failed: #{e.message}"
+      false
+    end
+
+    def with_work_session_lock
+      FileUtils.mkdir_p(File.dirname(WORK_SESSION_CAFFEINATE_PID_FILE))
+      File.open("#{WORK_SESSION_CAFFEINATE_PID_FILE}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        yield
+      end
+    end
+
+    def work_session_process_identity(pid)
+      return nil unless pid.is_a?(Integer) && pid.positive?
+
+      output, status = Open3.capture2('/bin/ps', '-p', pid.to_s, '-o', 'uid=', '-o', 'lstart=', '-o', 'comm=')
+      match = output.strip.match(/\A(\d+)\s+(.{24})\s+(.+)\z/)
+      return nil unless status.success? && match
+
+      { 'uid' => match[1].to_i, 'started_at' => match[2], 'executable' => match[3] }
+    end
+
+    def work_session_assertions_ready?(pid)
+      output, status = Open3.capture2('/usr/bin/pmset', '-g', 'assertions')
+      return false unless status.success?
+
+      owned = output.lines.select { |line| line.match?(/\bpid #{pid}\(caffeinate\):/) }.join
+      %w[UserIsActive PreventUserIdleDisplaySleep PreventUserIdleSystemSleep].all? do |kind|
+        owned.match?(/\b#{kind}\b/)
+      end
+    end
+
+    def owned_work_session_process?(record)
+      return false unless record.is_a?(Hash) && record['uid'] == Process.uid &&
+                          record['executable'] == '/usr/bin/caffeinate' && record['started_at']
+
+      work_session_process_identity(record['pid']) ==
+        record.slice('uid', 'started_at', 'executable')
+    end
+
+    def terminate_work_session_process(record)
+      return unless owned_work_session_process?(record)
+
+      Process.kill('TERM', record['pid'])
+    rescue Errno::ESRCH
+      nil
     end
 
     def stop_work_session_caffeinate
-      pid = read_work_session_caffeinate_pid
-      if pid && process_alive?(pid)
-        Process.kill('TERM', pid)
+      with_work_session_lock do
+        record = read_work_session_record
+        if record && process_alive?(record['pid']) && !owned_work_session_process?(record)
+          warn "Unverified work-session PID #{record['pid']} left running; no process was killed."
+        else
+          terminate_work_session_process(record)
+        end
+        FileUtils.rm_f(WORK_SESSION_CAFFEINATE_PID_FILE)
       end
-    rescue Errno::ESRCH
-      nil
     rescue StandardError => e
       warn "⚠️  Failed to stop work-session caffeinate: #{e.message}"
-    ensure
-      FileUtils.rm_f(WORK_SESSION_CAFFEINATE_PID_FILE)
+    end
+
+    def read_work_session_record
+      return nil unless File.exist?(WORK_SESSION_CAFFEINATE_PID_FILE)
+
+      value = JSON.parse(File.read(WORK_SESSION_CAFFEINATE_PID_FILE))
+      value = { 'pid' => value } if value.is_a?(Integer)
+      return value if value.is_a?(Hash) && value['pid'].is_a?(Integer) && value['pid'].positive?
+    rescue JSON::ParserError, SystemCallError
+      nil
     end
 
     def read_work_session_caffeinate_pid
-      return nil unless File.exist?(WORK_SESSION_CAFFEINATE_PID_FILE)
-
-      Integer(File.read(WORK_SESSION_CAFFEINATE_PID_FILE).strip)
-    rescue StandardError
-      nil
+      read_work_session_record&.fetch('pid')
     end
 
     def process_alive?(pid)
@@ -564,110 +631,18 @@ module SaneMasterModules
       true
     end
 
-    def capture_work_session_defaults
-      state = {
-        'saved_at' => Time.now.iso8601,
-        'host' => Socket.gethostname,
-        'idle_time' => read_defaults_value(current_host: true, domain: 'com.apple.screensaver', key: 'idleTime'),
-        'ask_for_password' => read_defaults_value(current_host: false, domain: 'com.apple.screensaver', key: 'askForPassword'),
-        'screen_lock_status' => current_screen_lock_status
-      }
-      File.write(WORK_SESSION_STATE_FILE, JSON.pretty_generate(state))
-      sop_log("Captured work-session defaults for #{state['host']}")
-    rescue StandardError => e
-      warn "⚠️  Failed to capture work-session defaults: #{e.message}"
-    end
-
-    def apply_work_session_defaults
-      write_defaults_value(current_host: true, domain: 'com.apple.screensaver', key: 'idleTime', type: '-int', value: '0')
-      write_defaults_value(current_host: false, domain: 'com.apple.screensaver', key: 'askForPassword', type: '-int', value: '0')
-      system('killall', 'cfprefsd', out: File::NULL, err: File::NULL)
-      sop_log('Applied work-session screensaver/lock defaults')
-    rescue StandardError => e
-      warn "⚠️  Failed to apply work-session defaults: #{e.message}"
-    end
-
-    def restore_work_session_defaults
-      return unless File.exist?(WORK_SESSION_STATE_FILE)
-
-      state = JSON.parse(File.read(WORK_SESSION_STATE_FILE))
-      restore_defaults_value(current_host: true, domain: 'com.apple.screensaver', key: 'idleTime', snapshot: state['idle_time'])
-      restore_defaults_value(current_host: false, domain: 'com.apple.screensaver', key: 'askForPassword', snapshot: state['ask_for_password'])
-      system('killall', 'cfprefsd', out: File::NULL, err: File::NULL)
-      FileUtils.rm_f(WORK_SESSION_STATE_FILE)
-      sop_log("Restored work-session defaults for #{state['host']}")
-    rescue StandardError => e
-      warn "⚠️  Failed to restore work-session defaults: #{e.message}"
-    end
-
-    def read_defaults_value(current_host:, domain:, key:)
-      cmd = ['defaults']
-      cmd << '-currentHost' if current_host
-      cmd += ['read', domain, key]
-      output = `#{cmd.map { |part| Shellwords.escape(part) }.join(' ')} 2>/dev/null`
-      status = $CHILD_STATUS.success?
-      {
-        'exists' => status,
-        'value' => status ? output.strip : nil
-      }
-    end
-
-    def write_defaults_value(current_host:, domain:, key:, type:, value:)
-      cmd = ['defaults']
-      cmd << '-currentHost' if current_host
-      cmd += ['write', domain, key, type, value]
-      system(*cmd, out: File::NULL, err: File::NULL)
-    end
-
-    def restore_defaults_value(current_host:, domain:, key:, snapshot:)
-      return unless snapshot.is_a?(Hash)
-
-      if snapshot['exists']
-        write_defaults_value(
-          current_host: current_host,
-          domain: domain,
-          key: key,
-          type: defaults_type_for(snapshot['value']),
-          value: snapshot['value'].to_s
-        )
-      else
-        cmd = ['defaults']
-        cmd << '-currentHost' if current_host
-        cmd += ['delete', domain, key]
-        system(*cmd, out: File::NULL, err: File::NULL)
-      end
-    end
-
-    def defaults_type_for(value)
-      return '-int' if value.to_s.match?(/\A-?\d+\z/)
-      return '-float' if value.to_s.match?(/\A-?\d+\.\d+\z/)
-
-      '-string'
-    end
-
-    def current_screen_lock_status
-      `sysadminctl -screenLock status 2>&1`.strip
-    rescue StandardError
-      'unavailable'
-    end
-
     def print_work_session_status
-      caffeinate_pid = read_work_session_caffeinate_pid
-      caffeinate_status = if caffeinate_pid && process_alive?(caffeinate_pid)
-                            "running (pid #{caffeinate_pid})"
-                          else
-                            'stopped'
-                          end
-      idle_time = read_defaults_value(current_host: true, domain: 'com.apple.screensaver', key: 'idleTime')
-      ask_for_password = read_defaults_value(current_host: false, domain: 'com.apple.screensaver', key: 'askForPassword')
-
-      puts "   caffeinate: #{caffeinate_status}"
-      puts "   screensaver idleTime: #{idle_time['exists'] ? idle_time['value'] : '(default)'}"
-      puts "   askForPassword: #{ask_for_password['exists'] ? ask_for_password['value'] : '(default)'}"
-      puts "   sysadminctl: #{current_screen_lock_status}"
-      if current_screen_lock_status.include?('immediate')
-        puts "   note: full unattended no-lock still requires a one-time 'sysadminctl -screenLock off -password -' on this Mac."
+      record = read_work_session_record
+      expires = Time.iso8601(record['expires_at']) if record && record['expires_at']
+      if owned_work_session_process?(record) && expires && expires > Time.now && work_session_assertions_ready?(record['pid'])
+        puts "   caffeinate: active (pid #{record['pid']}); expires #{expires.utc.iso8601}"
+      else
+        puts '   caffeinate: NOT PROTECTED (stopped, expired, or unverified)'
       end
+      puts '   lock and automatic logout preferences: unchanged'
+      puts '   bounded manual session; renew during long work and run work_session_off when finished'
+    rescue ArgumentError
+      puts '   caffeinate: NOT PROTECTED (invalid session expiry)'
     end
 
   end

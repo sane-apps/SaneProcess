@@ -549,6 +549,75 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       end
     end
 
+    test('hygiene plans generated dumps on a healthy Air disk without touching customer data') do
+      with_home do |home|
+        archive = mkdir_home_path(home, 'SaneApps/apps/SaneLot/outputs/mini-storage-archive')
+        loose_xcresult = File.join(home, 'SaneApps/apps/SaneLot/outputs/verify/live-ui.xcresult')
+        FileUtils.mkdir_p(File.dirname(loose_xcresult))
+        FileUtils.mkdir_p(loose_xcresult)
+        video_tmp = mkdir_home_path(home, 'Library/Containers/com.sanevideo.SaneVideo/Data/tmp')
+        video_docs = mkdir_home_path(home, 'Library/Containers/com.sanevideo.SaneVideo/Data/Documents')
+        video_root = mkdir_home_path(home, 'Library/Containers/com.sanevideo.app')
+        outputs_root = mkdir_home_path(home, 'SaneApps/apps/SaneLot/outputs')
+        sessions = mkdir_home_path(home, '.codex/sessions')
+        sizes = {
+          File.expand_path(archive) => 7.5,
+          File.expand_path(loose_xcresult) => 0.3,
+          File.expand_path(video_tmp) => 3.1,
+          File.expand_path(video_docs) => 5.7,
+          File.expand_path(video_root) => 2.5,
+          File.expand_path(outputs_root) => 14.0,
+          File.expand_path(sessions) => 9.4
+        }
+        subject = MachineCleanupHarness.new(disk: { available_gb: 450 }, sizes: sizes)
+
+        plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false,
+          host: 'local',
+          min_free_gb: 30,
+          cache_threshold_gb: 0.25,
+          deriveddata_age_days: 2,
+          trash_threshold_gb: 99,
+          preserve_apps: []
+        })
+
+        assert_eq(plan[:disk_pressure], false)
+        paths = plan[:actions].select { |action| action[:category] == 'hygiene_generated_artifacts' }.map { |action| action[:path] }
+        assert_includes(paths, archive)
+        assert_includes(paths, loose_xcresult)
+        assert_includes(paths, video_tmp)
+        assert(!paths.include?(video_docs), 'SaneVideo Documents are customer data')
+        assert(!paths.include?(video_root), 'SaneVideo container root is customer data')
+        assert(!paths.include?(outputs_root), 'whole app output roots stay on bounded evidence retention')
+        assert(!paths.include?(sessions), 'live Codex session state must survive hygiene')
+        assert_eq(subject.send(:machine_cleanup_safe_path?, video_tmp), true)
+        assert_eq(subject.send(:machine_cleanup_safe_path?, video_docs), false)
+        assert_eq(subject.send(:machine_cleanup_safe_path?, video_root), false)
+      end
+    end
+
+    test('small cheap caches are planned on a healthy disk') do
+      with_home do |home|
+        pip = mkdir_home_path(home, 'Library/Caches/pip')
+        sizes = { File.expand_path(pip) => 0.4 }
+        subject = MachineCleanupHarness.new(disk: { available_gb: 450 }, sizes: sizes)
+
+        plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false,
+          host: 'local',
+          min_free_gb: 30,
+          cache_threshold_gb: 0.25,
+          deriveddata_age_days: 2,
+          trash_threshold_gb: 99,
+          preserve_apps: []
+        })
+
+        assert_eq(plan[:disk_pressure], false)
+        cleaned = plan[:actions].select { |action| action[:category] == 'disposable_cache' }.map { |action| action[:path] }
+        assert_includes(cleaned, pip)
+      end
+    end
+
     test('healthy disk preserves expensive caches but still cleans cheap ones') do
       with_home do |home|
         playwright = mkdir_home_path(home, 'Library/Caches/ms-playwright')

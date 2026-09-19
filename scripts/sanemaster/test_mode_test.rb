@@ -19,6 +19,31 @@ TEST_MODE_PATH = File.expand_path('test_mode.rb', __dir__)
 exit(run_tests('SaneMaster Test Mode Fallback Tests') do
   subject = TestModeHarness.new
 
+  test_category('Hosts launch environment') do
+    test('forwards Hosts fixture flags and excludes unapproved or empty keys') do
+      values = {
+        'SANEHOSTS_CUSTOMER_UI_FIXTURE' => '/tmp/hosts-fixture',
+        'SANEHOSTS_CUSTOMER_UI_WELCOME' => '1',
+        'SANEHOSTS_EMPTY' => '',
+        'SANEVIDEO_TEST_FIXTURE' => 'video',
+        'UNRELATED_TEST_VALUE' => 'excluded'
+      }
+      saved = values.keys.to_h { |key| [key, ENV[key]] }
+      begin
+        values.each { |key, value| ENV[key] = value }
+        result = subject.send(:open_launch_env_pairs, allow_keychain: true, force_free_mode: false)
+        assert_includes(result, 'SANEHOSTS_CUSTOMER_UI_FIXTURE=/tmp/hosts-fixture')
+        assert_includes(result, 'SANEHOSTS_CUSTOMER_UI_WELCOME=1')
+        assert_includes(result, 'SANEVIDEO_TEST_FIXTURE=video')
+        assert(!result.include?('SANEHOSTS_EMPTY='))
+        assert(!result.include?('UNRELATED_TEST_VALUE=excluded'))
+      ensure
+        saved.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      end
+      true
+    end
+  end
+
   test_category('Unsigned fallback detection') do
     test('project name comes from manifest in suffixed worktree directories') do
       Dir.mktmpdir('SaneBar-2.1.62-audit-') do |dir|

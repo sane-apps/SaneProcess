@@ -12,9 +12,7 @@ module SaneMasterModules
 
     private
 
-    def machine_cleanup_evidence_targets(active, options, pressure)
-      return [] unless running_on_mini_host? && pressure
-
+    def machine_cleanup_evidence_targets(active, options, _pressure = false)
       blocking = machine_cleanup_server_blocking_flags(active) & %i[
         process_scan_failed
         xcodebuild_active
@@ -82,7 +80,7 @@ module SaneMasterModules
           {
             type: 'trash_path', category: 'generated_evidence', path: artifact,
             size_gb: size_gb,
-            reason: "Disk pressure: retain receipts/logs, newest #{keep_count} full runs, recent runs, and runs named in project docs."
+            reason: "Generated-evidence retention: keep receipts/logs, newest #{keep_count} full runs, recent runs, and runs named in project docs."
           }
         end
       end

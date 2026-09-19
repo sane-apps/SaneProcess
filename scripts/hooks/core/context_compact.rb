@@ -16,7 +16,7 @@ require_relative 'project_root'
 
 module ContextCompact
   CLAUDE_DIR = File.expand_path('../../../.claude', __dir__)
-  CONTEXT_WARN_THRESHOLD = 800_000  # bytes (~80% practical context in JSONL)
+  CONTEXT_WARN_THRESHOLD = 650_000  # leave room to persist before auto-compaction
   CONTEXT_WARNED_FILE = File.join(CLAUDE_DIR, 'context_warned_size.txt')
 
   @cached_transcript_path = nil
@@ -49,9 +49,15 @@ module ContextCompact
     File.write(CONTEXT_WARNED_FILE, size.to_s) rescue nil
 
     cmd = generate_compact_command
+    persistence = persistence_checkpoint
     warn ''
     warn '=' * 60
-    warn 'CONTEXT ~80% — COMPACT NOW BEFORE AUTO-COMPACT'
+    warn 'CONTEXT GROWING — CHECKPOINT BEFORE AUTO-COMPACT'
+    if persistence
+      warn ''
+      warn '🔴 DURABLE MEMORY CHECKPOINT REQUIRED BEFORE /compact'
+      persistence.each_line { |line| warn line.chomp }
+    end
     warn ''
     warn 'Copy/paste this:'
     warn ''
@@ -59,6 +65,22 @@ module ContextCompact
     warn ''
     warn '=' * 60
     warn ''
+  end
+
+  def self.persistence_checkpoint
+    tracking = StateManager.get(:handoff_tracking)
+    edits = tracking[:significant_edits].to_i
+    files = Array(tracking[:significant_files])
+    required = tracking[:always_persist_required] || (edits >= 2 && files.any?)
+    return nil unless required
+
+    missing = []
+    missing << 'SESSION_HANDOFF.md' unless tracking[:handoff_updated]
+    missing << 'AgentMemory or Serena' unless tracking[:memory_updated]
+    return nil if missing.empty?
+
+    names = (Array(tracking[:always_persist_files]) + files).uniq.first(8)
+    "Missing: #{missing.join(' and ')}\nChanged: #{names.join(', ')}"
   end
 
   def self.generate_compact_command
@@ -81,6 +103,7 @@ module ContextCompact
     parts << "task: #{kw.join(', ')}" if kw.any?
 
     ctx = parts.any? ? parts.join(', ') : 'work in progress'
+    ctx = "PERSIST FIRST; #{ctx}" if persistence_checkpoint
     "/compact keep #{ctx}. Archive routine tool output."
   end
 end

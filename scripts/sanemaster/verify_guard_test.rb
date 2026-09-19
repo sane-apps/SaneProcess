@@ -1100,6 +1100,23 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
           assert_eq(attempts.first[:success], false)
           assert_eq(attempts.first[:message], 'verify zero-test failure')
           assert_eq(suggested_memory, false)
+
+          diagnostic_args = nil
+          fresh_subject.define_singleton_method(:run_tests_with_progress) do |**_options|
+            { success: false, tests_run: 2, duration: 1, timeout: false,
+              failure_output: 'current failure', xcresult_path: '/current/ui.xcresult', log_path: '/current/ui.log' }
+          end
+          fresh_subject.define_singleton_method(:diagnose) do |path, **options|
+            diagnostic_args = [path, options[:log_path]]
+          end
+          capture_stdout do
+            begin
+              fresh_subject.verify([])
+            rescue SystemExit => error
+              assert_eq(error.status, 1)
+            end
+          end
+          assert_eq(diagnostic_args, ['/current/ui.xcresult', '/current/ui.log'])
         end
       end
       true

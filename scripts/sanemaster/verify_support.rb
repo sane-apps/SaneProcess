@@ -221,6 +221,8 @@ module SaneMasterModules
           handle_progress_update(line, state)
         end
         result[:failure_label] = entry[:label]
+        result[:xcresult_path] = entry[:xcresult_path]
+        result[:log_path] = entry[:log_path]
         if result[:success] && entry[:xcresult_path]
           summary = verify_xcresult_phase_summary(entry[:xcresult_path], entry[:test_selector])
           unless summary[:ok]
@@ -253,7 +255,9 @@ module SaneMasterModules
         timeout: result[:timeout],
         failure_output: success ? nil : result[:output],
         failure_label: success ? nil : result[:failure_label],
-        exit_status: result[:exit_status]
+        exit_status: result[:exit_status],
+        xcresult_path: result[:xcresult_path],
+        log_path: result[:log_path]
       }
     end
 

@@ -442,7 +442,8 @@ module SaneMasterModules
     end
 
     def customer_ui_air_fallback_approved?
-      ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR'
+      ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR' ||
+        ENV['SANE_MINI_UNAVAILABLE'] == 'MR. SANE CONFIRMS MINI UNAVAILABLE'
     end
 
     def customer_ui_receipt_host_allowed?(host)
@@ -1209,6 +1210,14 @@ module SaneMasterModules
           next
         end
 
+        # These two legacy producers copied requirements into passed results.
+        # Existing receipts remain invalid even after new execution is disabled.
+        workflow = result['workflow']
+        if %w[SaneClick SaneHosts].include?(receipt['app']) && workflow.is_a?(Hash) &&
+           File.basename(workflow['runner'].to_s) == 'customer_ui_action_executor.rb'
+          issues << "#{id}: revoked legacy executor receipt; supply independently verified workflow evidence"
+        end
+
         coverage_status = result['coverage_status'].to_s.strip
         action_status = result['status'].to_s.strip
         if coverage_status.empty?
@@ -1932,6 +1941,7 @@ module SaneMasterModules
       artifacts = Array(workflow['artifacts']).map(&:to_s).map(&:strip).reject(&:empty?)
       issues << "#{id}: workflow proof missing artifacts" if artifacts.empty?
       artifacts.each_with_index do |path, index|
+        issues.concat(customer_ui_declared_artifact_issues(path, label: "#{id}: workflow artifact ##{index + 1}"))
         issues.concat(customer_ui_generic_artifact_issues(
           path,
           label: "#{id}: workflow artifact ##{index + 1}",
@@ -1952,12 +1962,41 @@ module SaneMasterModules
 
       image_required = CUSTOMER_UI_SCREENSHOT_EVIDENCE_TYPES.include?(evidence_type)
       paths.flat_map.with_index do |path, path_index|
-        customer_ui_generic_artifact_issues(
+        declaration_issues = if %w[mini_click mini_automation automation_transcript mini_runtime state_receipt file_state log actual_output].include?(evidence_type)
+                               customer_ui_declared_artifact_issues(path, label: label)
+                             else
+                               []
+                             end
+        declaration_issues + customer_ui_generic_artifact_issues(
           path,
           label: "#{label} artifact ##{path_index + 1}",
           image_required: image_required
         )
       end
+    end
+
+    # These legacy sweep payloads copy manifest plans, never observations.
+    # A file existing on the Mini cannot turn declared steps into executed UI.
+    # Do not reject mixed source + real runtime evidence or invent a new signer.
+    def customer_ui_declared_artifact_issues(path, label:)
+      return [] unless File.extname(path.to_s).downcase == '.json' && customer_ui_regular_file?(path)
+
+      payload = JSON.parse(safe_customer_ui_file_read(path))
+      return [] unless payload.is_a?(Hash)
+
+      source_only = %w[source_guard source_and_test_guard].include?(payload['proof_type'].to_s)
+      video_plan = payload.key?('action_id') && payload['steps'].is_a?(Array) &&
+                   (payload.keys - %w[runner action_id inputs steps note]).empty?
+      rows = payload['actions']
+      batch_plan = rows.is_a?(Array) && rows.any? && rows.all? do |row|
+        row.is_a?(Hash) && row.key?('id') && row.key?('expected_outputs') &&
+          (row.keys - %w[id surfaces inputs expected_outputs screenshot]).empty?
+      end
+      return [] unless source_only || video_plan || batch_plan
+
+      ["#{label}: declaration-only artifact cannot prove runtime execution: #{path}; capture observed actions and results"]
+    rescue JSON::ParserError
+      ["#{label}: runtime JSON artifact is invalid: #{path}"]
     end
 
     def customer_ui_evidence_paths(item)

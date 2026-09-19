@@ -8,6 +8,8 @@ require 'tmpdir'
 require_relative '../hooks/test/test_framework'
 require_relative 'process_metrics'
 require_relative 'verify_failure_review'
+require_relative 'verify'
+require_relative 'diagnostics'
 
 class VerifyFailureReviewHarness
   include SaneMasterModules::ProcessMetrics
@@ -39,6 +41,64 @@ ensure
 end
 
 exit(run_tests('SaneMaster Verify Failure Review Tests') do
+  test_category('Current run diagnostic artifacts') do
+    test('failed phase retains its exact result bundle and command log') do
+      harness = Object.new.extend(SaneMasterModules::Verify)
+      phases = [
+        { label: 'unit', cmd: ['unit'], xcresult_path: '/fixture/unit.xcresult', log_path: '/fixture/unit.log' },
+        { label: 'ui', cmd: ['ui'], xcresult_path: '/fixture/ui.xcresult', log_path: '/fixture/ui.log' }
+      ]
+      harness.define_singleton_method(:run_verify_preflight) {}
+      harness.define_singleton_method(:build_test_commands) { |*_args, **_options| phases }
+      harness.define_singleton_method(:cleanup_test_processes) {}
+      harness.define_singleton_method(:execute_with_logging) do |cmd, *_args, **_options|
+        { success: cmd == ['unit'], timeout: false, output: 'current phase output', exit_status: 65 }
+      end
+      harness.define_singleton_method(:verify_xcresult_phase_summary) do |*_args|
+        { ok: true, matched_test_count: 2 }
+      end
+      result = nil
+      capture_stdout { result = harness.send(:run_tests_with_progress, timeout_seconds: 10) }
+      assert_eq(result[:success], false)
+      assert_eq(result[:xcresult_path], '/fixture/ui.xcresult')
+      assert_eq(result[:log_path], '/fixture/ui.log')
+      assert_eq(result[:failure_output], 'current phase output')
+    end
+
+    test('standalone discovery includes canonical verify and monitor output bundles') do
+      Dir.mktmpdir('diagnostic-results-') do |dir|
+        Dir.chdir(dir) do
+          harness = Object.new.extend(SaneMasterModules::Diagnostics)
+          harness.define_singleton_method(:project_name) { 'DiagnosticFixtureNoRealProject' }
+          cutoff = Time.now
+          paths = ['outputs/verify/run/test.xcresult', 'outputs/monitor-tests/run/test.xcresult']
+          paths.each_with_index do |path, index|
+            FileUtils.mkdir_p(path)
+            File.utime(cutoff + index + 1, cutoff + index + 1, path)
+            assert_eq(harness.send(:find_latest_xcresult, since: cutoff), path)
+          end
+          assert_eq(harness.send(:find_latest_xcresult, since: cutoff + 3), nil)
+        end
+      end
+    end
+
+    test('missing current bundle names its command log without selecting another run') do
+      Dir.mktmpdir('diagnostic-missing-') do |dir|
+        harness = Object.new.extend(SaneMasterModules::Diagnostics)
+        harness.define_singleton_method(:project_name) { 'DiagnosticFixtureNoRealProject' }
+        harness.define_singleton_method(:cleanup_old_exports) {}
+        harness.define_singleton_method(:find_latest_xcresult) { |**_options| raise 'Unrelated run discovery reached' }
+        [File.join(dir, 'missing.xcresult'), nil].each do |bundle|
+          output = capture_stdout do
+            harness.diagnose(bundle, since: Time.now, log_path: File.join(dir, 'build.log'))
+          end
+          assert_includes(output, File.join(dir, 'build.log'))
+          assert(!output.include?('test_output.txt'), 'must not suggest a stale legacy log')
+        end
+      end
+    end
+  end
+
   test_category('zero-test failure drilldown') do
     test('clusters explicit and inferred zero-test failure buckets') do
       events = [

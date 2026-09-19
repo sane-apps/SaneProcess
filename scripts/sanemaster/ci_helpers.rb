@@ -155,7 +155,7 @@ module SaneMasterModules
         options = monitor_test_options(args, default_scheme: project_scheme)
       rescue ArgumentError => e
         puts "❌ Invalid monitor_tests arguments: #{e.message}"
-        puts '   Usage: monitor_tests [--scheme NAME] [--package-path PATH] [--test-plan NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
+        puts '   Usage: monitor_tests [--unsigned] [--scheme NAME] [--package-path PATH] [--test-plan NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
         exit 2
       end
       scheme = options.fetch(:scheme)
@@ -171,6 +171,7 @@ module SaneMasterModules
         package_path: package_path,
         test_plan: test_plan,
         test_selector: test_name,
+        unsigned: options.fetch(:unsigned, false),
         started_at: started_at,
         upgrade_run_id: ENV['SANEMASTER_UPGRADE_RUN_ID'],
         upgrade_nonce: ENV['SANEMASTER_UPGRADE_NONCE']
@@ -452,6 +453,11 @@ module SaneMasterModules
       remaining = args.dup
       until remaining.empty?
         argument = remaining.shift
+        if argument == '--unsigned'
+          raise ArgumentError, '--unsigned was provided more than once' if values.key?(:unsigned)
+          values[:unsigned] = true
+          next
+        end
         match = argument.match(/\A--(scheme|package-path|test-plan|test|timeout)=(.*)\z/)
         if match
           key = match[1]
@@ -490,10 +496,10 @@ module SaneMasterModules
         test_plan: values[:test_plan],
         test_selector: values[:test_selector],
         timeout: timeout_text.to_i
-      }
+      }.merge(values[:unsigned] ? { unsigned: true } : {})
     end
 
-    def monitor_test_plan(root:, scheme:, package_path: nil, test_plan: nil, test_selector:, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
+    def monitor_test_plan(root:, scheme:, package_path: nil, test_plan: nil, test_selector:, unsigned: false, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
                           upgrade_run_id: nil, upgrade_nonce: nil)
       project_root = File.realpath(root)
       upgrade_run_id = upgrade_run_id.to_s.strip
@@ -518,6 +524,9 @@ module SaneMasterModules
         '-destination', 'platform=macOS,arch=arm64',
         '-resultBundlePath', result_bundle_path
       ]
+      if unsigned
+        command += %w[CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= PROVISIONING_PROFILE=]
+      end
       if test_plan || package_path
         # Xcode cannot apply -only-testing to Swift Testing package targets.
         # Run the requested scope, then require the exact selector in xcresult.

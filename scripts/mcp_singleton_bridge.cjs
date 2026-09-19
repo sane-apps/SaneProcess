@@ -82,7 +82,7 @@ const SERVER_SPECS = {
   'macos-automator': {
     port: 37913,
     command: NPX_EXECUTABLE,
-    args: ['-y', '@steipete/macos-automator-mcp@0.4.5'],
+    args: ['-y', '@steipete/macos-automator-mcp@0.4.7'],
   },
   serena: {
     port: 37917,
@@ -100,6 +100,15 @@ const SERVER_SPECS = {
     env: {
       ENABLE_TOOL_SEARCH: 'true',
     },
+  },
+  xcode: {
+    port: 37915,
+    command: firstExecutable([
+      homePath('.grok', 'bin', 'xcode-mcp.sh'),
+      homePath('SaneApps', 'infra', 'SaneProcess', 'scripts', 'grok-bin', 'xcode-mcp.sh'),
+    ]),
+    // mcpbridge speaks Content-Length; the Node stdio client needs NDJSON.
+    args: ['--framed'],
   },
 };
 
