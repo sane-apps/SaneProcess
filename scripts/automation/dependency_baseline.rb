@@ -24,32 +24,34 @@ module SaneAppsDependencyBaseline
 
   SHARED_FORMULAE = %w[
     node@24 ruby python@3.14 xcodegen swiftlint swiftformat lefthook fastlane
-    tailscale gh jq create-dmg mockolo periphery ripgrep xcbeautify
+    tailscale gh jq create-dmg mockolo periphery ripgrep xcbeautify openclaw/tap/peekaboo
   ].freeze
   ROLE_FORMULAE = {
     air: [],
     mini: %w[pango]
   }.freeze
+  # firecrawl-cli is shared: Grok TUI runs on Mini as well as Air.
   SHARED_NPM = %w[
     @modelcontextprotocol/sdk
     @modelcontextprotocol/server-github
     @mweinbach/apple-docs-mcp
     @steipete/macos-automator-mcp
+    firecrawl-cli
   ].freeze
   ROLE_NPM = {
-    air: %w[@upstash/context7-mcp firecrawl-cli @google/gemini-cli],
+    air: %w[@upstash/context7-mcp @google/gemini-cli],
     mini: %w[@agentmemory/agentmemory playwright]
   }.freeze
   NPM_VERSIONS = {
-    '@agentmemory/agentmemory' => '0.9.27',
-    '@google/gemini-cli' => '0.50.0',
-    '@modelcontextprotocol/sdk' => '1.29.0',
+    '@agentmemory/agentmemory' => '0.9.29',
+    '@google/gemini-cli' => '0.58.0',
+    '@modelcontextprotocol/sdk' => '1.30.0',
     '@modelcontextprotocol/server-github' => '2025.4.8',
     '@mweinbach/apple-docs-mcp' => '1.3.1',
-    '@steipete/macos-automator-mcp' => '0.4.6',
-    '@upstash/context7-mcp' => '3.2.3',
-    'firecrawl-cli' => '1.23.1',
-    'playwright' => '1.61.1'
+    '@steipete/macos-automator-mcp' => '0.4.7',
+    '@upstash/context7-mcp' => '4.0.5',
+    'firecrawl-cli' => '1.23.3',
+    'playwright' => '1.63.0'
   }
   # Same-major npm bumps that keep_current may apply without a human prompt.
   # Only packages whose pin lives solely in this file.
@@ -145,7 +147,7 @@ module SaneAppsDependencyBaseline
     JSON.parse(stdout).fetch('formulae').map do |formula|
       installed = formula.fetch('installed').map { |entry| entry.fetch('version') }
       {
-        name: formula.fetch('name'),
+        name: formula.fetch('full_name', formula.fetch('name')),
         installed: installed,
         stable: formula.dig('versions', 'stable'),
         outdated: formula.fetch('outdated')
@@ -253,17 +255,8 @@ module SaneAppsDependencyBaseline
         drift: data['version'].to_s != data['stable_version'].to_s
       }
     end
-    %w[claude codex].each do |name|
-      stdout, _stderr, status = Open3.capture3(name, '--version')
-      next unless status.success?
-
-      have = stdout.to_s.strip
-      next if have.empty?
-
-      rows << { name: name, have: have.split.first, latest: name == 'claude' ? 'autoUpdates' : 'manual', drift: false }
-    rescue Errno::ENOENT
-      next
-    end
+    # Native client launchers may bootstrap installers even for --version.
+    # Only report saved metadata here; native updaters need separate preflight.
     rows
   end
 
@@ -379,6 +372,8 @@ module SaneAppsDependencyBaseline
   end
 
   def main(argv)
+    ENV.update('SANE_NO_KEYCHAIN' => '1', 'SANE_KEYCHAIN_FALLBACK' => '0',
+               'SANE_ALLOW_KEYCHAIN_PROMPTS' => '0')
     options = {
       apply: false, role: nil, refresh: false, npm_only: false,
       latest: false, apply_safe_latest: false, notify: false, install_agent: false
@@ -400,6 +395,16 @@ module SaneAppsDependencyBaseline
     role = options[:role] || role_for
     ENV['PATH'] = managed_path(home)
     puts "SaneApps dependency baseline role=#{role} mode=#{options[:apply] ? 'apply' : 'check'}"
+
+    if options[:apply] || options[:apply_safe_latest]
+      formula_targets = options[:apply] && !options[:npm_only] ? formulae(role) : []
+      puts "Formula targets: #{formula_targets.empty? ? '(none)' : formula_targets.join(', ')}"
+      puts "npm targets: #{npm_specs(role).join(', ')}"
+      puts "npm removals if installed: #{FORBIDDEN_GLOBAL_NPM.join(', ')}"
+      puts "Same-major auto-bump candidates: #{SAFE_AUTO_BUMP.join(', ')}" if options[:apply_safe_latest]
+      puts 'Native installers, App Store, administrator and Keychain actions require separate preflight.'
+      puts 'Shared Keychain lookups disabled for this run.'
+    end
 
     if options[:install_agent]
       puts install_keep_current_agent(home: home)
