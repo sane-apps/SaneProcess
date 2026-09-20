@@ -578,7 +578,16 @@ if [ -n "$visible_raw" ]; then
       "$TARGET_APP")
         ;;
       Terminal)
-        issues+=("Terminal is visible; hide or close automation windows before capture")
+        # Local runs deliberately don't manage Terminal (hide_terminal returns
+        # early under MINI_VISUAL_AVOID_TERMINAL_AUTOMATION), so failing here
+        # would deadlock every capture while Terminal.app runs. Warn on stderr
+        # (keeps JSON stdout clean) and let mandatory visual review catch real
+        # contamination instead of blocking a clean desktop.
+        if avoid_terminal_automation; then
+          echo "warning: Terminal is visible but unmanaged (MINI_VISUAL_AVOID_TERMINAL_AUTOMATION=1); check the capture for contamination" >&2
+        else
+          issues+=("Terminal is visible; hide or close automation windows before capture")
+        fi
         ;;
       SaneBar|SaneClick|SaneClip|SaneHosts|SaneSales|SaneSync|SaneVideo)
         $DESKTOP_MODE || issues+=("Visible stale SaneApps window: $name while testing $TARGET_APP")

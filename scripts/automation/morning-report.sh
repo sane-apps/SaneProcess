@@ -21,7 +21,11 @@ KEYCHAIN_FALLBACK_ENABLED="${SANE_KEYCHAIN_FALLBACK:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GITHUB_QUEUE="$SCRIPT_DIR/github-queue.sh"
 OUTPUT_DIR="$HOME/SaneApps/infra/SaneProcess/outputs"
-REPORT_FILE="$OUTPUT_DIR/morning_report.md"
+# Main deliverable honors SANE_OUTPUT_DIR (the daily-report plist sets it to
+# ~/SaneApps/outputs, where operator_brief and mini-nightly read it).
+# Archive/cache stay under OUTPUT_DIR.
+REPORT_DIR="${SANE_OUTPUT_DIR:-$OUTPUT_DIR}"
+REPORT_FILE="$REPORT_DIR/morning_report.md"
 ARCHIVE_DIR="$OUTPUT_DIR/reports"
 CACHE_DIR="$OUTPUT_DIR/.cache"
 APPS_DIR="$HOME/SaneApps/apps"
@@ -34,7 +38,7 @@ GH_ORG="sane-apps"
 PRODUCT_SITES=""
 REPOS=""
 
-mkdir -p "$CACHE_DIR" "$ARCHIVE_DIR"
+mkdir -p "$CACHE_DIR" "$ARCHIVE_DIR" "$REPORT_DIR"
 
 persist_secret_to_env_cache() {
   local value="$1"
