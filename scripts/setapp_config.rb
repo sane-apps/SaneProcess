@@ -30,6 +30,9 @@ module SetappConfig
     apps_root = File.join(root, 'apps')
     discovered = if Dir.exist?(apps_root)
                    Dir.children(apps_root).select do |entry|
+                     # Release-peer checkouts share the canonical manifest;
+                     # uploads always ship from the canonical checkout.
+                     next false if entry.match?(/release-peer/i)
                      manifest_path = File.join(apps_root, entry, '.saneprocess')
                      next false unless File.file?(manifest_path)
 

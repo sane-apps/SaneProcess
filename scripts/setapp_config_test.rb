@@ -76,5 +76,18 @@ exit(run_tests('Setapp Config Tests') do
       end
       true
     end
+
+    test('release-peer checkouts never claim the canonical app id') do
+      Dir.mktmpdir('setapp-config-test') do |root|
+        apps_root = File.join(root, 'apps')
+        write_manifest(apps_root, 'SaneClip', format(ENABLED_MANIFEST, app_id: '9001', slug: 'canon'))
+        write_manifest(apps_root, 'SaneBar', DISABLED_MANIFEST)
+        write_manifest(apps_root, 'SaneClip-release-peer-2.3.22', format(ENABLED_MANIFEST, app_id: '9001', slug: 'peer'))
+        targets = SetappConfig.portal_targets(root: root)
+        assert_eq(targets.keys, ['9001'])
+        assert(targets['9001'][:app_root].end_with?('apps/SaneClip'), targets['9001'][:app_root])
+      end
+      true
+    end
   end
 end)
