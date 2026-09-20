@@ -67,6 +67,22 @@ rescue JSON::ParserError, Errno::ENOENT
   {}
 end
 
+def persistence_debt(cwd)
+  tracking = hook_state_section(cwd, :handoff_tracking)
+  edits = tracking['significant_edits'].to_i
+  files = Array(tracking['significant_files'])
+  required = tracking['always_persist_required'] || (edits >= 2 && files.any?)
+  return nil unless required
+
+  missing = []
+  missing << 'SESSION_HANDOFF.md' unless tracking['handoff_updated'] == true
+  missing << 'durable memory (AgentMemory or Serena)' unless tracking['memory_updated'] == true
+  return nil if missing.empty?
+
+  tracked = (Array(tracking['always_persist_files']) + files).uniq.first(8)
+  { missing: missing, files: tracked }
+end
+
 def git_changed_path?(cwd, expanded_path)
   root_out, root_status = Open3.capture2e('git', '-C', cwd, 'rev-parse', '--show-toplevel')
   return false unless root_status.success?
@@ -238,6 +254,15 @@ rescue StandardError
 end
 
 visual = visual_state(cwd)
+persistence = persistence_debt(cwd)
+if persistence
+  warn "🔴 Task \"#{task_subject}\" completed with undocumented significant work"
+  warn "   Missing: #{persistence[:missing].join(' AND ')}"
+  warn "   Changed: #{persistence[:files].join(', ')}"
+  warn '   Save a current checkpoint before completion; later edits make an earlier checkpoint stale.'
+  exit 2
+end
+
 real_ui_files = live_customer_facing_ui_files(cwd, visual)
 explicit_visual_request = visual['reason'] == 'prompt_requested_visual_verification'
 if visual['required'] && (explicit_visual_request || real_ui_files.any?)

@@ -197,11 +197,8 @@ def check_url(url, max_redirects: MAX_REDIRECTS, attempts: 3)
   { status: :error, code: 0, message: "Unknown check failure" }
 end
 
-def check_redirect_mapping(slug, product)
-  expected_prefix = product_checkout_url(product)
-  return { status: :error, message: "Missing checkout URL for #{slug}" } if expected_prefix.empty?
-
-  redirect_url = "#{REDIRECT['base_url']}/#{slug}"
+def check_redirect_mapping(name, redirect_url, expected_prefix)
+  return { status: :error, message: "Missing checkout URL for #{name}" } if expected_prefix.to_s.empty?
 
   uri = URI.parse(redirect_url)
   http = Net::HTTP.new(uri.host, uri.port)
@@ -293,7 +290,15 @@ end
 # Domain expiry checking — from config
 DOMAINS_TO_MONITOR = CONFIG.fetch("all_domains").freeze
 
+def registrable_domain?(domain)
+  domain.to_s.strip.count(".") == 1
+end
+
 def check_domain_expiry(domain)
+  unless registrable_domain?(domain)
+    return { status: :skip, message: "subdomain, not a registrable expiry target" }
+  end
+
   # Try Cloudflare API first (if available)
   cf_token = resolve_secret_value("cloudflare", "api_token", "CLOUDFLARE_API_TOKEN")
   if !cf_token.empty?
@@ -450,15 +455,9 @@ bad_links.each do |bl|
   log "FAIL Wrong domain: #{bl[:url]} in #{bl[:file]}"
 end
 
-# 2b. Verify go.saneapps.com redirect maps to exact configured checkout UUID
-PRODUCTS.each do |slug, product|
-  checkout_url = product_checkout_url(product)
-  monitor_links = product.fetch("monitor_links", true)
-  next if checkout_url.empty? || monitor_links == false
-
-  result = check_redirect_mapping(slug, product)
-  name = "#{product['name']} redirect mapping"
-  redirect_url = "#{REDIRECT['base_url']}/#{slug}"
+# 2b. Verify go.saneapps.com redirect maps to the configured checkout URL
+record_redirect_mapping = lambda do |name, redirect_url, expected_prefix|
+  result = check_redirect_mapping(name, redirect_url, expected_prefix)
   if result[:status] == :ok
     successes << name
     log "OK  #{name} (#{result[:code]} -> #{result[:location]})"
@@ -466,6 +465,28 @@ PRODUCTS.each do |slug, product|
     failures << { name: name, url: redirect_url, error: result[:message] }
     log "FAIL #{name}: #{result[:message]} — #{redirect_url}"
   end
+end
+
+PRODUCTS.each do |slug, product|
+  checkout_url = product_checkout_url(product)
+  monitor_links = product.fetch("monitor_links", true)
+  next if checkout_url.empty? || monitor_links == false
+
+  record_redirect_mapping.call(
+    "#{product['name']} redirect mapping",
+    "#{REDIRECT['base_url']}/#{slug}",
+    checkout_url
+  )
+end
+
+BUNDLES.each do |_slug, bundle|
+  checkout_url = bundle["checkout_url"].to_s.strip
+  route_url = bundle["route"].to_s.strip
+  next if checkout_url.empty? || route_url.empty?
+
+  name = bundle["name"].to_s.strip
+  name = "bundle" if name.empty?
+  record_redirect_mapping.call("#{name} redirect mapping", route_url, checkout_url)
 end
 
 # 3. Check domain expiry dates
@@ -487,6 +508,8 @@ DOMAINS_TO_MONITOR.each do |domain|
     elsif result[:managed]
       log "OK   Domain #{domain} managed via Cloudflare"
     end
+  elsif result[:status] == :skip
+    log "OK   Domain #{domain} skipped (#{result[:message]})"
   elsif result[:status] == :error
     domain_warnings << { domain: domain, message: result[:message], severity: :unknown }
     log "WARN Could not check expiry for #{domain}: #{result[:message]}"

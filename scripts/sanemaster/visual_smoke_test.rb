@@ -115,8 +115,8 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
         assert_eq(result[:status], 'planned')
         assert_eq(receipt['commands'].first['name'], 'permissions')
         assert_eq(receipt['runner'], 'terminal-host')
-        assert_includes(summary, 'peekaboo image --mode screen --retina --path')
-        assert_includes(summary, 'peekaboo image --app menubar --retina --path')
+        assert_includes(summary, 'peekaboo see --mode screen --retina --no-elements --path')
+        assert_includes(summary, 'peekaboo see --app menubar --retina --no-elements --path')
         assert_includes(summary, 'peekaboo see --app VisualSmokeTest --json --annotate --path')
       end
       true
@@ -175,19 +175,19 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
               echo '{"data":{"screen_recording":true,"accessibility":true}}'
               exit 0
             fi
-            if [ "$1" = "list" ] && [ "$2" = "apps" ]; then
+            if [ "$1" = "app" ] && [ "$2" = "list" ]; then
               echo '{"data":{"apps":[{"name":"VisualSmokeTest"}]}}'
               exit 0
             fi
-            if [ "$1" = "list" ] && [ "$2" = "windows" ]; then
+            if [ "$1" = "window" ] && [ "$2" = "list" ]; then
               echo '{"data":{"windows":[]},"summary":{"counts":{"windows":0}}}'
               exit 0
             fi
-            if [ "$1" = "list" ] && [ "$2" = "menubar" ]; then
+            if [ "$1" = "menubar" ] && [ "$2" = "list" ]; then
               echo '{"data":{"items":[]}}'
               exit 0
             fi
-            if [ "$1" = "image" ]; then
+            if [ "$1" = "see" ]; then
               while [ "$#" -gt 0 ]; do
                 if [ "$1" = "--path" ]; then
                   shift
@@ -197,9 +197,6 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
                 fi
                 shift
               done
-            fi
-            if [ "$1" = "see" ]; then
-              exit 12
             fi
             exit 1
           SH
@@ -220,7 +217,7 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
         assert_eq(app_see[:skipped], true)
         assert_includes(app_see[:reason], 'target app has no windows')
         assert_eq(app_see_receipt['skipped'], true)
-        assert(!invocation_log.include?('see --app'), 'app-see command should not run for a windowless app')
+        assert(!invocation_log.include?("see --app #{options.app_name}"), 'app-see command should not run for a windowless app')
       end
       true
     ensure
@@ -240,15 +237,15 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
               echo '{"data":{"screen_recording":true,"accessibility":true}}'
               exit 0
             fi
-            if [ "$1" = "list" ] && [ "$2" = "apps" ]; then
+            if [ "$1" = "app" ] && [ "$2" = "list" ]; then
               echo '{"error":{"code":"PERMISSION_ERROR_SCREEN_RECORDING"}}'
               exit 4
             fi
-            if [ "$1" = "list" ] && [ "$2" = "menubar" ]; then
+            if [ "$1" = "menubar" ] && [ "$2" = "list" ]; then
               echo '{"data":{"items":[]}}'
               exit 0
             fi
-            if [ "$1" = "image" ]; then
+            if [ "$1" = "see" ]; then
               while [ "$#" -gt 0 ]; do
                 if [ "$1" = "--path" ]; then
                   shift
@@ -272,7 +269,7 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
 
         assert(result[:ok], 'no-app visual precheck should not fail on an unused app-list API')
         assert_eq(result[:status], 'passed')
-        assert(!invocation_log.include?('list apps'), 'no-app precheck should not call app-list')
+        assert(!invocation_log.include?('app list'), 'no-app precheck should not call app-list')
       end
       true
     ensure
@@ -290,39 +287,40 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
               echo '{"data":{"screen_recording":true,"accessibility":true}}'
               exit 0
             fi
-            if [ "$1" = "list" ] && [ "$2" = "apps" ]; then
+            if [ "$1" = "app" ] && [ "$2" = "list" ]; then
               echo '{"data":{"apps":[{"name":"VisualSmokeTest"}]}}'
               exit 0
             fi
-            if [ "$1" = "list" ] && [ "$2" = "windows" ]; then
+            if [ "$1" = "window" ] && [ "$2" = "list" ]; then
               echo '{"data":{"windows":[{"title":"VisualSmokeTest","bounds":[[0,0],[320,240]]}]},"summary":{"counts":{"windows":1}}}'
               exit 0
             fi
-            if [ "$1" = "list" ] && [ "$2" = "menubar" ]; then
+            if [ "$1" = "menubar" ] && [ "$2" = "list" ]; then
               echo '{"data":{"items":[]}}'
               exit 0
             fi
-            if [ "$1" = "image" ]; then
-              while [ "$#" -gt 0 ]; do
-                if [ "$1" = "--path" ]; then
-                  shift
-                  printf 'png' > "$1"
-                  echo '{"data":{"path":"'"$1"'"}}'
-                  exit 0
-                fi
-                shift
-              done
-            fi
             if [ "$1" = "see" ]; then
+              annotate=0
+              path=""
               while [ "$#" -gt 0 ]; do
+                if [ "$1" = "--annotate" ]; then
+                  annotate=1
+                fi
                 if [ "$1" = "--path" ]; then
                   shift
-                  printf 'png' > "$1"
-                  echo '{"success":false,"error":{"code":"WINDOW_NOT_FOUND","message":"post-capture failure"}}'
-                  exit 1
+                  path="$1"
                 fi
                 shift
               done
+              if [ -n "$path" ]; then
+                printf 'png' > "$path"
+              fi
+              if [ "$annotate" = "1" ]; then
+                echo '{"success":false,"error":{"code":"WINDOW_NOT_FOUND","message":"post-capture failure"}}'
+                exit 1
+              fi
+              echo '{"data":{"path":"'"$path"'"}}'
+              exit 0
             fi
             exit 1
           SH
@@ -344,6 +342,17 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       true
     ensure
       subject.singleton_class.remove_method(:visual_smoke_cleanliness_issues) rescue nil
+    end
+
+    test('cleanliness ignores SaneApps Automation Terminal runner windows') do
+      source = File.read(File.expand_path('visual_smoke.rb', __dir__), encoding: Encoding::UTF_8)
+      cleanliness = source[/def visual_smoke_cleanliness_issues.*def visual_smoke_terminal_window_count/m].to_s
+      assert_includes(source, 'SaneApps Automation:')
+      assert_includes(source, 'if visible is false then return 0')
+      assert_includes(cleanliness, 'visual_smoke_hide_terminal')
+      assert(!cleanliness.include?('visual_smoke_close_terminal_host'),
+             'Mini cleanliness should hide Terminal, not quit the runner')
+      true
     end
 
     test('cleanliness check rejects visible stale apps and helper apps') do

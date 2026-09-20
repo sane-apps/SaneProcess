@@ -91,6 +91,7 @@ class PageParser(HTMLParser):
         self.links: dict[str, str] = {}
         self.anchors: list[str] = []
         self.anchor_attrs: list[dict[str, str]] = []
+        self._anchor: dict[str, str] | None = None
         self.images: list[dict[str, str]] = []
         self.ids: list[str] = []
         self.jsonld: list[str] = []
@@ -118,6 +119,8 @@ class PageParser(HTMLParser):
             if rel and href and "canonical" in rel_tokens(rel):
                 self.links["canonical"] = href
         elif tag_name == "a":
+            self._anchor = values
+            values["_text"] = ""
             href = values.get("href")
             if href:
                 self.anchors.append(href)
@@ -132,13 +135,17 @@ class PageParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag_name = tag.lower()
-        if tag_name == "title":
+        if tag_name == "a":
+            self._anchor = None
+        elif tag_name == "title":
             self._in_title = False
         elif tag_name == "script" and self._in_jsonld:
             self.jsonld.append(self._jsonld_buffer)
             self._in_jsonld = False
 
     def handle_data(self, data: str) -> None:
+        if self._anchor is not None:
+            self._anchor["_text"] += data
         if self._in_title:
             self.title += data
         if self._in_jsonld:
@@ -209,6 +216,8 @@ def html_files(site: Site) -> list[Path]:
         rel = path.relative_to(site.root)
         if rel.parts and rel.parts[0] in {"assets", "images"}:
             continue
+        if path.name == "404.html":
+            continue
         files.append(path)
     return files
 
@@ -256,6 +265,16 @@ def local_path_for_url(site: Site, url: str) -> Path | None:
     return candidates[0]
 
 
+
+def _is_allowed_og_image_name(name: str) -> bool:
+    if name in {"og-image.png", "bundle-og-image.png"}:
+        return True
+    if name.startswith("og-image-") and name.endswith(".png"):
+        stamp = name[len("og-image-"):-len(".png")]
+        return len(stamp) == 8 and stamp.isdigit()
+    return False
+
+
 def expected_image_path(site: Site, path: Path) -> str:
     rel = path.relative_to(site.root).as_posix()
     return site.page_image_paths.get(rel, site.expected_image_path)
@@ -268,9 +287,13 @@ def local_social_image_path(site: Site, path: Path, image_url: str) -> Path | No
         return None
     if parsed.netloc != urlparse(site.domain).netloc:
         return None
-    if parsed.path != expected_path:
+    url_path = parsed.path
+    if url_path != expected_path and not _is_allowed_og_image_name(Path(url_path).name):
         return None
-    return site.root / expected_path.lstrip("/")
+    local = (site.root / url_path.lstrip("/")).resolve()
+    if not local.is_relative_to(site.root.resolve()) or not local.is_file():
+        return None
+    return local
 
 
 def schema_types(value: object) -> set[str]:
@@ -443,6 +466,11 @@ def audit_page(site: Site, path: Path) -> tuple[str | None, list[str]]:
             if not ({"noopener", "noreferrer"} & anchor_rel):
                 issues.append(f'{site.name}/{rel}: target="_blank" link missing rel noopener/noreferrer: {anchor}')
         parsed_anchor = urlparse(urljoin(site.domain + "/", anchor))
+        label = text(anchor_attrs.get("_text")).casefold()
+        if (label in {"donate", "sponsor", "sponsor on github"}
+                and parsed_anchor.hostname == "go.saneapps.com"
+                and parsed_anchor.path.startswith("/buy/")):
+            issues.append(f"{site.name}/{rel}: donation link points to app checkout: {anchor}")
         if not site.allow_appcast_links and parsed_anchor.path == "/appcast.xml":
             issues.append(f"{site.name}/{rel}: pre-release site must not link to appcast.xml")
         if anchor.startswith(("#", "mailto:", "tel:", "javascript:")):

@@ -23,6 +23,8 @@
 require 'json'
 require 'shellwords'
 require 'socket'
+require_relative 'core/hook_payload'
+require_relative 'core/local_ui_guard'
 
 module SaneLayoutGuard
   module_function
@@ -48,7 +50,7 @@ module SaneLayoutGuard
     \z
   /ix.freeze
 
-  EDIT_TOOL_PATTERN = /\A(?:Write|Edit|NotebookEdit)\z/i.freeze
+  EDIT_TOOL_PATTERN = /\A(?:Write|Edit|NotebookEdit|StrReplace|WriteFile|search_replace)\z/i.freeze
   SHELLS = %w[sh bash zsh].freeze
   WRAPPERS = %w[env sudo command builtin time nice].freeze
   SSH_OPTIONS_WITH_VALUE = %w[
@@ -64,6 +66,9 @@ module SaneLayoutGuard
     return format_reason('nested fake Users/ tree') if nested_users_tree?(raw)
     return format_reason('~/SaneApps/Users nested fake tree') if saneapps_users_nested?(raw)
     return format_reason('/Users/sj path on Mini (or non-Air host)') if users_sj_forbidden?(raw)
+    if (air_reason = SaneLocalUIGuard.air_app_edit_reason(raw))
+      return air_reason
+    end
     return format_reason('Desktop write outside Screenshots / LemonSqueezy-Uploads') if desktop_forbidden?(raw)
     return format_reason('SaneApps product under ~/Dev (Dev is third-party forks only)') if sane_under_dev?(raw)
 
@@ -402,16 +407,16 @@ module SaneLayoutGuard
 
   def run_stdin_hook!
     begin
-      input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
-    rescue JSON::ParserError, Errno::ENOENT
+      parsed = SaneHookPayload.parse($stdin.read.force_encoding(Encoding::UTF_8))
+    rescue Errno::ENOENT
       exit 0
     end
 
-    tool_name = input['tool_name'].to_s
-    tool_input = input['tool_input'] || {}
+    tool_name = parsed['tool_name']
+    tool_input = parsed['tool_input']
 
-    if tool_name.match?(EDIT_TOOL_PATTERN)
-      path = tool_input['file_path'] || tool_input['path']
+    if SaneHookPayload.edit?(tool_name) || tool_name.match?(EDIT_TOOL_PATTERN)
+      path = parsed['path']
       if (reason = violation_for_path(path))
         warn "🔴 BLOCKED: Project layout violation"
         warn "   #{reason}"
@@ -422,9 +427,9 @@ module SaneLayoutGuard
       exit 0
     end
 
-    exit 0 unless tool_name == 'Bash'
+    exit 0 unless SaneHookPayload.shell?(tool_name) || (tool_name.empty? && !parsed['command'].empty?)
 
-    command = tool_input['command'].to_s
+    command = parsed['command']
     exit 0 if command.empty?
 
     if (reason = violation_for_bash(command))

@@ -27,6 +27,7 @@
 require 'json'
 require 'shellwords'
 require 'digest'
+require_relative 'core/hook_payload'
 
 EMAIL_APPROVAL_FLAG = '/tmp/.email_post_approved.json'
 EMAIL_BATCH_APPROVAL_FLAG = '/tmp/.email_batch_post_approved.json'
@@ -45,8 +46,8 @@ CUSTOMER_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Mr\.?\s+Sane\s*(?:\nhttps:\/\/saneapps
 # Owner ruling 2026-07-15: ONE business signature template that works for every
 # product lane. Keep these lists in sync with validate_email_format in
 # ~/SaneApps/infra/scripts/check-inbox.sh.
-BUSINESS_SIGNATURE_PRODUCTS = 'SaneHosts|SaneClip|SaneClick|SaneSales|SaneVideo|SaneScan|SaneLot|SaneCite'
-BUSINESS_SIGNATURE_SITES = 'saneapps|sanehosts|saneclip|saneclick|sanesales|sanevideo|sanescan|sanelot|sanecite'
+BUSINESS_SIGNATURE_PRODUCTS = 'SaneHosts|SaneClip|SaneClick|SaneSales|SaneVideo|SaneScan|SaneLot|SaneCite|Fathers(?: Project)?'
+BUSINESS_SIGNATURE_SITES = 'saneapps|sanehosts|saneclip|saneclick|sanesales|sanevideo|sanescan|sanelot|sanecite|fathers\.saneapps'
 BUSINESS_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:#{BUSINESS_SIGNATURE_PRODUCTS}))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:#{BUSINESS_SIGNATURE_SITES})\.com\/?\s*\z/i
 
 def email_format_valid?(body)
@@ -183,15 +184,15 @@ rescue JSON::ParserError, SystemCallError
 end
 
 begin
-  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
-rescue JSON::ParserError, Errno::ENOENT
+  parsed = SaneHookPayload.parse($stdin.read.force_encoding(Encoding::UTF_8))
+rescue Errno::ENOENT
   exit 0
 end
 
-tool_name = input['tool_name']
-exit 0 unless tool_name == 'Bash'
+tool_name = parsed['tool_name']
+exit 0 unless SaneHookPayload.shell?(tool_name) || (tool_name.empty? && !parsed['command'].empty?)
 
-command = (input['tool_input'] || {})['command'].to_s
+command = parsed['command']
 exit 0 if command.empty?
 
 # Block Claude from touching the approval flag directly in a send command chain.

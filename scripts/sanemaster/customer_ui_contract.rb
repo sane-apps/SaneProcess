@@ -263,6 +263,7 @@ module SaneMasterModules
           app: app_name,
           manifest_path: nil,
           receipt_path: receipt_path,
+          release_profile: nil,
           issues: ["Missing customer UI action contract (expected one of: #{CUSTOMER_UI_MANIFEST_PATHS.join(', ')})"],
           warnings: warnings
         }
@@ -271,6 +272,26 @@ module SaneMasterModules
       manifest = read_customer_ui_yaml(manifest_path)
       actions = Array(manifest['actions'])
       required_actions = actions.reject { |action| action['release_required'] == false }
+      release_profile = metadata_value(config, 'customer_ui_release_profile')
+      if release_profile && !release_profile.empty?
+        profiles = manifest['release_profiles'] || {}
+        if profiles.key?(release_profile)
+          wanted = Array(profiles[release_profile]).map(&:to_s)
+          action_ids = actions.map { |a| a['id'].to_s }
+          unknown_ids = (wanted - action_ids).sort
+          unless unknown_ids.empty?
+            warnings << "Release profile '#{release_profile}' names unknown actions: #{unknown_ids.join(', ')}"
+          end
+          required_actions = required_actions.select { |action| wanted.include?(action['id'].to_s) }
+        else
+          known = profiles.keys.map(&:to_s).sort
+          warnings << "Unknown customer UI release profile '#{release_profile}' " \
+                      "(manifest defines: #{known.empty? ? 'none' : known.join(', ')}); validating the full ledger"
+          release_profile = nil
+        end
+      else
+        release_profile = nil
+      end
 
       issues << 'Customer UI action contract has no release-required actions' if required_actions.empty?
       issues.concat(customer_ui_manifest_issues(manifest_path, manifest, required_actions))
@@ -288,6 +309,7 @@ module SaneMasterModules
           manifest_sha256: manifest_sha,
           source_fingerprint: source_fingerprint,
           action_count: required_actions.length,
+          release_profile: release_profile,
           issues: issues,
           warnings: warnings
         }
@@ -312,6 +334,7 @@ module SaneMasterModules
         manifest_sha256: manifest_sha,
         source_fingerprint: source_fingerprint,
         action_count: required_actions.length,
+        release_profile: release_profile,
         receipt_generated_at: receipt['generated_at'],
         issues: issues,
         warnings: warnings,
@@ -323,6 +346,7 @@ module SaneMasterModules
         app: app_name,
         manifest_path: manifest_path,
         receipt_path: receipt_path,
+        release_profile: nil,
         issues: ["Customer UI QA contract parse failure: #{e.message}"],
         warnings: warnings,
         strict_visual: strict_visual
@@ -442,7 +466,8 @@ module SaneMasterModules
     end
 
     def customer_ui_air_fallback_approved?
-      ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR'
+      ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR' ||
+        ENV['SANE_MINI_UNAVAILABLE'] == 'MR. SANE CONFIRMS MINI UNAVAILABLE'
     end
 
     def customer_ui_receipt_host_allowed?(host)
@@ -804,8 +829,21 @@ module SaneMasterModules
       end.new(nil)
     end
 
+    def customer_ui_ios_app_project?
+      config = current_saneprocess_config
+      type = metadata_value(config, 'type').to_s.downcase
+      return true if type == 'ios_app'
+
+      appstore = config['appstore'] || config[:appstore] || {}
+      platforms = Array(appstore['platforms'] || appstore[:platforms]).map { |platform| platform.to_s.downcase }
+      platforms.include?('ios') && !platforms.include?('macos')
+    end
+
     def customer_ui_prepare_target_before_sweep(app_name)
       return [] unless customer_ui_visual_precheck_required?
+      # iOS sweeps run in the simulator through the app-specific runner; the
+      # macOS launcher cannot start them, so skip the launch entirely.
+      return [] if customer_ui_ios_app_project?
       if app_name == 'SaneBar'
         return [] if resource_soak_running_app_candidate(app_name)
 
@@ -1207,6 +1245,14 @@ module SaneMasterModules
         unless result.is_a?(Hash)
           issues << "#{id}: per-action result must be an object"
           next
+        end
+
+        # These two legacy producers copied requirements into passed results.
+        # Existing receipts remain invalid even after new execution is disabled.
+        workflow = result['workflow']
+        if %w[SaneClick SaneHosts].include?(receipt['app']) && workflow.is_a?(Hash) &&
+           File.basename(workflow['runner'].to_s) == 'customer_ui_action_executor.rb'
+          issues << "#{id}: revoked legacy executor receipt; supply independently verified workflow evidence"
         end
 
         coverage_status = result['coverage_status'].to_s.strip
@@ -1932,6 +1978,7 @@ module SaneMasterModules
       artifacts = Array(workflow['artifacts']).map(&:to_s).map(&:strip).reject(&:empty?)
       issues << "#{id}: workflow proof missing artifacts" if artifacts.empty?
       artifacts.each_with_index do |path, index|
+        issues.concat(customer_ui_declared_artifact_issues(path, label: "#{id}: workflow artifact ##{index + 1}"))
         issues.concat(customer_ui_generic_artifact_issues(
           path,
           label: "#{id}: workflow artifact ##{index + 1}",
@@ -1952,12 +1999,41 @@ module SaneMasterModules
 
       image_required = CUSTOMER_UI_SCREENSHOT_EVIDENCE_TYPES.include?(evidence_type)
       paths.flat_map.with_index do |path, path_index|
-        customer_ui_generic_artifact_issues(
+        declaration_issues = if %w[mini_click mini_automation automation_transcript mini_runtime state_receipt file_state log actual_output].include?(evidence_type)
+                               customer_ui_declared_artifact_issues(path, label: label)
+                             else
+                               []
+                             end
+        declaration_issues + customer_ui_generic_artifact_issues(
           path,
           label: "#{label} artifact ##{path_index + 1}",
           image_required: image_required
         )
       end
+    end
+
+    # These legacy sweep payloads copy manifest plans, never observations.
+    # A file existing on the Mini cannot turn declared steps into executed UI.
+    # Do not reject mixed source + real runtime evidence or invent a new signer.
+    def customer_ui_declared_artifact_issues(path, label:)
+      return [] unless File.extname(path.to_s).downcase == '.json' && customer_ui_regular_file?(path)
+
+      payload = JSON.parse(safe_customer_ui_file_read(path))
+      return [] unless payload.is_a?(Hash)
+
+      source_only = %w[source_guard source_and_test_guard].include?(payload['proof_type'].to_s)
+      video_plan = payload.key?('action_id') && payload['steps'].is_a?(Array) &&
+                   (payload.keys - %w[runner action_id inputs steps note]).empty?
+      rows = payload['actions']
+      batch_plan = rows.is_a?(Array) && rows.any? && rows.all? do |row|
+        row.is_a?(Hash) && row.key?('id') && row.key?('expected_outputs') &&
+          (row.keys - %w[id surfaces inputs expected_outputs screenshot]).empty?
+      end
+      return [] unless source_only || video_plan || batch_plan
+
+      ["#{label}: declaration-only artifact cannot prove runtime execution: #{path}; capture observed actions and results"]
+    rescue JSON::ParserError
+      ["#{label}: runtime JSON artifact is invalid: #{path}"]
     end
 
     def customer_ui_evidence_paths(item)

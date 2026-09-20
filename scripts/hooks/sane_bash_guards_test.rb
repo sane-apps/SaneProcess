@@ -77,6 +77,132 @@ exit(run_tests('Sane Bash Guards Dispatcher Tests') do
     true
   end
 
+  test('blocks pbcopy on Air including via ssh mini') do
+    env = {
+      'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1',
+      'SANE_FORCE_MAC_MINI_FOR_TEST' => nil,
+      'SANE_APPROVE_LOCAL_UI_ON_AIR' => nil
+    }
+    _out, err, status = Open3.capture3(
+      env.compact,
+      'ruby',
+      File.join(HOOK_DIR, 'sane_launch_guard.rb'),
+      stdin_data: JSON.generate(
+        'tool_name' => 'Bash',
+        'tool_input' => { 'command' => "ssh mini 'printf x | pbcopy'" }
+      ),
+      chdir: File.expand_path('../..', __dir__)
+    )
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'UNIVERSAL CLIPBOARD')
+    true
+  end
+
+  test('blocks Air-local osascript against SaneClip') do
+    env = {
+      'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1',
+      'SANE_APPROVE_LOCAL_UI_ON_AIR' => nil
+    }
+    _out, err, status = Open3.capture3(
+      env,
+      'ruby',
+      File.join(HOOK_DIR, 'sane_launch_guard.rb'),
+      stdin_data: JSON.generate(
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => 'osascript -e "tell application \\"System Events\\" to tell process \\"SaneClip\\" to click menu bar item 1 of menu bar 2"'
+        }
+      ),
+      chdir: File.expand_path('../..', __dir__)
+    )
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'AIR LOCAL GUI BLOCKED')
+    true
+  end
+
+  test('blocks Air-local peekaboo without approval') do
+    env = {
+      'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1',
+      'SANE_APPROVE_LOCAL_UI_ON_AIR' => nil
+    }
+    _out, err, status = Open3.capture3(
+      env,
+      'ruby',
+      File.join(HOOK_DIR, 'sane_launch_guard.rb'),
+      stdin_data: JSON.generate(
+        'tool_name' => 'Bash',
+        'tool_input' => { 'command' => 'which peekaboo' }
+      ),
+      chdir: File.expand_path('../..', __dir__)
+    )
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'AIR LOCAL GUI BLOCKED')
+    true
+  end
+
+  test('allows Air-local peekaboo when approval is prefixed on the command') do
+    env = {
+      'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1',
+      'SANE_APPROVE_LOCAL_UI_ON_AIR' => nil
+    }
+    approval = "SANE_APPROVE_LOCAL_UI_ON_AIR='MR. SANE APPROVES LOCAL UI ON AIR'"
+    _out, err, status = Open3.capture3(
+      env,
+      'ruby',
+      File.join(HOOK_DIR, 'sane_launch_guard.rb'),
+      stdin_data: JSON.generate(
+        'tool_name' => 'Bash',
+        'tool_input' => { 'command' => "#{approval} which peekaboo" }
+      ),
+      chdir: File.expand_path('../..', __dir__)
+    )
+    assert_eq(status.exitstatus, 0, err)
+    true
+  end
+
+  test('allows Air-local SaneClip osascript when approval is prefixed on the command') do
+    env = {
+      'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1',
+      'SANE_APPROVE_LOCAL_UI_ON_AIR' => nil
+    }
+    approval = "SANE_APPROVE_LOCAL_UI_ON_AIR='MR. SANE APPROVES LOCAL UI ON AIR'"
+    _out, err, status = Open3.capture3(
+      env,
+      'ruby',
+      File.join(HOOK_DIR, 'sane_launch_guard.rb'),
+      stdin_data: JSON.generate(
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "#{approval} osascript -e \"tell process \\\"SaneClip\\\" to click\""
+        }
+      ),
+      chdir: File.expand_path('../..', __dir__)
+    )
+    assert_eq(status.exitstatus, 0, err)
+    true
+  end
+
+  test('allows Mini-gui-run osascript against SaneClip') do
+    env = {
+      'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1',
+      'SANE_APPROVE_LOCAL_UI_ON_AIR' => nil
+    }
+    _out, err, status = Open3.capture3(
+      env,
+      'ruby',
+      File.join(HOOK_DIR, 'sane_launch_guard.rb'),
+      stdin_data: JSON.generate(
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => 'ssh mini ~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh -- "osascript -e tell process SaneClip"'
+        }
+      ),
+      chdir: File.expand_path('../..', __dir__)
+    )
+    assert_eq(status.exitstatus, 0)
+    true
+  end
+
   test('blocks direct raw Mini screenshot even when ssh wrapper is bypassed') do
     _out, err, status = run_guard(
       'sane_bash_guards.rb',
@@ -149,7 +275,7 @@ exit(run_tests('Sane Bash Guards Dispatcher Tests') do
       {
         'tool_name' => 'Bash',
         'tool_input' => {
-          'command' => "ssh mini 'peekaboo image --mode screen --path /tmp/x.png'"
+          'command' => "ssh mini 'peekaboo see --mode screen --path /tmp/x.png'"
         }
       }
     )

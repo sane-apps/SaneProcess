@@ -21,7 +21,7 @@ module SaneMasterModules
     include MachineCleanupProcesses
 
     DEFAULT_MIN_FREE_GB = 30
-    DEFAULT_CACHE_THRESHOLD_GB = 5
+    DEFAULT_CACHE_THRESHOLD_GB = 0.25
     DEFAULT_DERIVEDDATA_AGE_DAYS = 2
     DEFAULT_TRASH_THRESHOLD_GB = 1
 
@@ -84,6 +84,8 @@ module SaneMasterModules
         return false
       end
 
+      return false if machine_cleanup_server_busy?(options)
+
       plan = build_machine_cleanup_plan(options)
 
       if options[:json]
@@ -94,13 +96,37 @@ module SaneMasterModules
 
       return true unless options[:apply]
 
+      return false if machine_cleanup_server_busy?(options)
+
       result = apply_machine_cleanup_plan(plan, options)
       sweep_ghost_dock_tiles(options)
-      puts JSON.pretty_generate(result) if options[:json]
+      if options[:json]
+        puts JSON.pretty_generate(result)
+      elsif !options[:quiet]
+        freed = result[:freed_gb] ? "#{result[:freed_gb]}G" : 'unknown'
+        puts "Applied #{result[:applied_count]} action(s), #{result[:failed_count]} failed; disk now reports #{freed} freed."
+      end
       result[:success]
     end
 
     private
+
+    def machine_cleanup_server_busy?(options)
+      return false unless options[:server]
+
+      # Planning can take time. Re-read processes before scanning and again before apply.
+      remove_instance_variable(:@machine_cleanup_ps_rows) if instance_variable_defined?(:@machine_cleanup_ps_rows)
+      blocking = machine_cleanup_server_blocking_flags(machine_cleanup_active_inventory)
+      return false if blocking.empty?
+
+      reason = "Server cleanup skipped: active or unknown work (#{blocking.join(', ')})"
+      if options[:json]
+        puts JSON.pretty_generate(command: 'machine_cleanup', status: 'skipped', reason: reason, blocking: blocking)
+      else
+        warn reason
+      end
+      true
+    end
 
     # Ghost Dock tiles accumulate on the Mini when GUI/agent apps get
     # force-killed during build/test cleanup. Relaunching the Dock drops any
@@ -212,6 +238,7 @@ module SaneMasterModules
       trash_target = machine_cleanup_trash_target(options)
       simulator_plan = machine_cleanup_simulator_plan(active, options, pressure)
       simulator_targets = simulator_plan.is_a?(Array) ? simulator_plan.compact : [simulator_plan].compact
+      hygiene_targets = machine_cleanup_hygiene_targets(active, options)
       server_targets = machine_cleanup_server_targets(active, options, pressure)
       evidence_targets = machine_cleanup_evidence_targets(active, options, pressure)
       layout_targets = machine_cleanup_layout_litter_targets
@@ -221,6 +248,7 @@ module SaneMasterModules
       actions.concat(deriveddata_targets)
       actions.concat(simulator_targets)
       actions.concat(layout_targets)
+      actions.concat(hygiene_targets)
       actions.concat(server_targets)
       actions.concat(evidence_targets)
       actions << trash_target if trash_target

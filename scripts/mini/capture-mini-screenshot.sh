@@ -208,7 +208,9 @@ resolve_mini_host() {
   local resolved_host=""
   local candidate=""
   local candidates=""
-  if ssh -o BatchMode=yes -o ConnectTimeout=2 "$host" true >/dev/null 2>&1; then
+  # Do not override ConnectTimeout. Host mini uses the LAN→Tailscale proxy
+  # (~/.ssh/config ConnectTimeout 15). A 2s override makes a live Mini look down.
+  if ssh -o BatchMode=yes "$host" true >/dev/null 2>&1; then
     printf '%s' "$host"
     return 0
   fi
@@ -229,7 +231,7 @@ resolve_mini_host() {
   done
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
-    if ssh -o BatchMode=yes -o ConnectTimeout=3 "$candidate" true >/dev/null 2>&1; then
+    if ssh -o BatchMode=yes "$candidate" true >/dev/null 2>&1; then
       printf '%s' "$candidate"
       return 0
     fi
@@ -300,7 +302,7 @@ run_local_runner_with_timeout() {
   (
     if $locked_evidence; then
       /usr/bin/env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" \
-        PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/private/tmp \
+        PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/private/tmp __CF_USER_TEXT_ENCODING="0x$(printf '%X' "$(id -u)"):0:0" \
         /bin/bash --noprofile --norc -c "$runner" >"$output_file" 2>&1
     else
       bash -lc "$runner" >"$output_file" 2>&1
@@ -433,7 +435,7 @@ elif [ "$has_explicit_target" = false ]; then
 fi
 if $locked_evidence; then
   $preserve_frontmost && locked_window_args=(--preserve-frontmost) || locked_window_args=(--activate-pid "$activate_pid" --window-title "$window_title")
-  locked_cmd="$(remote_cmd /usr/bin/env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/private/tmp /bin/bash "$LOCKED_HELPER_RUNNER" --source "$LOCAL_SKILL_DIR" --expected-sha "$CWS_SCREENSHOT_EXPECTED_HELPER_SHA256" "${locked_window_args[@]}" -- "$@")"
+  locked_cmd="$(remote_cmd /usr/bin/env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/private/tmp __CF_USER_TEXT_ENCODING="0x$(printf '%X' "$(id -u)"):0:0" /bin/bash "$LOCKED_HELPER_RUNNER" --source "$LOCAL_SKILL_DIR" --expected-sha "$CWS_SCREENSHOT_EXPECTED_HELPER_SHA256" "${locked_window_args[@]}" -- "$@")"
   cmd="${guard_cmd}${locked_cmd}"
   if running_in_ssh_session; then
     runner_cmd="$(remote_cmd /bin/bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window --no-login-shell -- "$cmd")"

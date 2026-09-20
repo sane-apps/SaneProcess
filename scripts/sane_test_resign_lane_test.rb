@@ -38,6 +38,12 @@ exit(run_tests('SaneTest Re-sign Lane Tests') do
       runner.instance_variable_set(:@pro_mode, true)
       runner.instance_variable_set(:@no_logs, true)
 
+      log = Object.new
+      %i[launched! detach follow stop].each { |name| log.define_singleton_method(name) { |*_args| order << name } }
+      runner.define_singleton_method(:start_runtime_log) { order << :start_runtime_log; log }
+      runner.define_singleton_method(:canonical_local_app_path) { '/tmp/Fixture.app' }
+      runner.define_singleton_method(:local_app_processes) { |_path| ["#{Process.pid} fixture"] }
+
       runner.send(:run_local)
 
       resign = order.index(:ensure_developer_id_signature_local)
@@ -47,6 +53,10 @@ exit(run_tests('SaneTest Re-sign Lane Tests') do
       assert(resign < sweep,
              'single-copy sweep must not trash the fresh build product before re-sign validation')
       assert(sweep < launch, 'exactly one runtime copy must be enforced before launch')
+      assert(order.index(:start_runtime_log) < launch, 'saved live log must be ready before launch')
+      assert(order.index(:launched!) > launch, 'log lifecycle must bind to the launched app')
+      assert_includes(order, :detach)
+      assert(!order.include?(:stop), 'quiet launch must keep saved capture active')
       true
     end
 

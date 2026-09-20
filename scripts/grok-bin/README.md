@@ -3,14 +3,20 @@
 This directory is the canonical git-owned source for the operator-facing helpers
 that get installed into `~/.grok/bin/` (or surfaced via PATH / completions for Grok sessions).
 
-Files (initial):
+Files:
 
 - `README.md` — this file
 - `check-mcps` — live Grok MCP probe
 - `agentmemory-mcp-remote.sh` — daily AgentMemory MCP talks to the Mini worker on loopback `:3111` (`agentmemory mcp --no-engine`). Cloud Access is `--login` or `AGENTMEMORY_MCP_FORCE_CLOUD=1` only and must not hang session start.
+- `cloudflare-mcp-remote.sh` — token-backed Cloudflare admin MCP (`~/.config/nv/env` then Keychain)
+- `xcode-mcp.sh` / `xcode-mcp-frame.py` — Mini `mcpbridge`. Air Grok uses the Mini HTTP singleton at `http://127.0.0.1:37915/mcp` through the AgentMemory tunnel. `--framed` is the Content-Length path for that singleton.
 - Future thin shims will live here (MCP probes, SaneMaster convenience wrappers, Grok-specific status helpers, etc.)
 
-Do not edit only `~/.grok/bin/*` and call it done.
+Native Grok safety hooks are not in this bin dir. Git source is
+`scripts/hooks/grok/hooks.json`, installed to `~/.grok/hooks/sane-guards.json`
+by `sync_grok`.
+
+Do not edit only `~/.grok/bin/*` and call it done. `sync_grok` overlays these helpers onto `~/.grok/bin` and must never `--delete` that directory (the official Grok CLI binary lives there).
 
 Canonical workflow:
 

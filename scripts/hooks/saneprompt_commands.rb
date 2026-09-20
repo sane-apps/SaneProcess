@@ -181,7 +181,7 @@ module SanePromptCommands
       warn ''
       warn 'AVAILABLE RESET COMMANDS'
       warn ''
-      warn '  rb-  / reset breaker   → Clear circuit breaker (after 3+ failures)'
+      warn '  rb-  / reset breaker   → Clear circuit breaker (after 2 failures)'
       warn '  reset blocks / unblock → Clear block counters (after repeated blocks)'
       warn '  rr- / reset research   → Clear research (forces redo all 4 categories)'
       warn '  rq- / reset reqs       → Clear stale prompt requirements (e.g. "commit")'

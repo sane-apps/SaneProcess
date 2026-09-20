@@ -10,7 +10,7 @@ require 'open3'
 HOOK = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/sane_bash_guards.rb')
 
 payload = begin
-  JSON.parse($stdin.read.to_s)
+  JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
 rescue JSON::ParserError
   {}
 end

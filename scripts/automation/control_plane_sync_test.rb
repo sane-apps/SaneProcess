@@ -97,53 +97,20 @@ def fake_transport!(bin_dir)
     esac
   BASH
 
-  write(File.join(bin_dir, 'scp'), <<~'BASH', executable: true)
-    #!/bin/bash
-    set -euo pipefail
-    printf 'scp' >> "$SYNC_OP_LOG"
-    printf '\t%s' "$@" >> "$SYNC_OP_LOG"
-    printf '\n' >> "$SYNC_OP_LOG"
-
-    operands=()
-    for arg in "$@"; do
-      [[ "$arg" == -* ]] && continue
-      operands+=("$arg")
-    done
-    destination="${operands[$((${#operands[@]} - 1))]}"
-    destination="${destination#*:}"
-    source_count=$((${#operands[@]} - 1))
-    for ((i = 0; i < source_count; i++)); do
-      source="${operands[$i]}"
-      if [[ "$destination" == */ || -d "$destination" || $source_count -gt 1 ]]; then
-        mkdir -p "$destination"
-        cp "$source" "$destination/"
-      else
-        mkdir -p "$(dirname "$destination")"
-        cp "$source" "$destination"
-      fi
-    done
-  BASH
-
   write(File.join(bin_dir, 'rsync'), <<~'BASH', executable: true)
     #!/bin/bash
     set -euo pipefail
-    printf 'rsync' >> "$SYNC_OP_LOG"
-    printf '\t%s' "$@" >> "$SYNC_OP_LOG"
-    printf '\n' >> "$SYNC_OP_LOG"
-
-    dry_run=0
-    operands=()
+    printf 'rsync\t%s\n' "$*" >> "$SYNC_OP_LOG"
+    if [[ "${SYNC_FAIL_RSYNC:-}" == "all" || ( "${SYNC_FAIL_RSYNC:-}" == "verify" && "$*" == *--dry-run* ) ]]; then
+      echo 'injected transfer failure' >&2
+      exit 23
+    fi
+    args=()
     for arg in "$@"; do
-      [[ "$arg" == '--dry-run' ]] && dry_run=1
-      [[ "$arg" == -* ]] && continue
-      operands+=("$arg")
+      [[ "$arg" == mini:* ]] && arg="${arg#mini:}"
+      args+=("$arg")
     done
-    [[ "$dry_run" -eq 1 ]] && exit 0
-    source="${operands[$((${#operands[@]} - 2))]}"
-    destination="${operands[$((${#operands[@]} - 1))]}"
-    destination="${destination#*:}"
-    mkdir -p "$destination"
-    cp -R "${source%/}/." "$destination/"
+    exec /usr/bin/rsync "${args[@]}"
   BASH
 end
 
@@ -157,6 +124,7 @@ def create_sync_fixture(home, remote_home)
     command = "#{home}/SaneApps/infra/SaneProcess/scripts/automation/agentmemory-mcp-air.sh"
     args = []
   TOML
+  write(File.join(remote_home, '.codex', 'config.toml'), "model = \"mini-owned\"\n")
   write(File.join(home, '.codex', 'SKILLS_REGISTRY.md'), "fixture registry\n")
   write(File.join(home, '.codex', 'skills', 'fixture', 'SKILL.md'), "fixture skill\n")
   write(File.join(home, '.agents', 'skills', 'shared', 'SKILL.md'), "shared skill\n")
@@ -233,7 +201,7 @@ tests << lambda do
   assert(!reconcile_source.include?('--reconcile-dirty'),
          'unattended Air/Mini reconcile must not auto-stash dirty app repos')
   air_memory = File.read(File.join(ROOT, 'automation', 'agentmemory-mcp-air.sh'))
-  assert(air_memory.include?('ConnectTimeout=3'), 'Air AgentMemory tunnel must fail quickly')
+  assert(air_memory.include?('ConnectTimeout=15'), 'Air AgentMemory tunnel must bound SSH long enough for off-LAN DERP')
   assert(air_memory.include?('127.0.0.1:3111'), 'Air AgentMemory tunnel target drifted')
   assert(air_memory.include?('ServerAliveInterval=15'), 'Air AgentMemory tunnel must detect dead connections')
   assert(air_memory.include?('ServerAliveCountMax=3'), 'Air AgentMemory tunnel retry bound drifted')
@@ -274,11 +242,7 @@ tests << lambda do
     sentinels.each { |path, before| assert(sha(path) == before, "automation sentinel changed: #{path}") }
 
     remote_config = File.read(File.join(remote_home, '.codex', 'config.toml'))
-    assert(remote_config.include?('command = "/fixture/bin/node"'), 'Mini config did not rewrite Node path')
-    assert(remote_config.include?(remote_home), 'Mini config did not rewrite local home path')
-    assert(remote_config.include?('command = "npx"'), 'Mini config did not install direct AgentMemory MCP')
-    assert(remote_config.include?('AGENTMEMORY_URL = "http://localhost:3111"'), 'Mini AgentMemory URL missing')
-    assert(!remote_config.include?('agentmemory-mcp-air.sh'), 'Air AgentMemory tunnel leaked into Mini config')
+    assert(remote_config == "model = \"mini-owned\"\n", 'host-owned Mini config was overwritten')
     assert(File.file?(File.join(remote_home, '.codex', 'skills', 'fixture', 'SKILL.md')),
            'Codex skill did not sync')
     assert(File.file?(File.join(remote_home, '.agents', 'skills', 'shared', 'SKILL.md')),
@@ -291,6 +255,52 @@ tests << lambda do
       remote = File.join(remote_home, rel)
       assert(File.file?(remote) && sha(local) == sha(remote), "control-plane file parity failed: #{rel}")
     end
+    # Exercise all wrappers through real rsync against isolated fake transports.
+    %w[.cursor/hooks.json .grok/config.toml].each do |rel|
+      write(File.join(home, rel), "controller-only\n")
+      write(File.join(remote_home, rel), "mini-owned\n")
+    end
+    write(File.join(home, '.cursor/hooks/fixture.sh'), "cursor\n")
+    write(File.join(home, 'SaneApps/infra/SaneProcess/scripts/grok-bin/fixture'), "grok\n")
+    write(File.join(home, 'SaneApps/infra/SaneProcess/scripts/automation/heartbeats/fixture.md'), "fixture\n")
+    write(File.join(remote_home, '.agents/skills/mini-only/SKILL.md'), "mini-only\n")
+    write(File.join(home, 'SaneApps/infra/SaneProcess/scripts/hooks/grok/hooks.json'), "{}\n")
+    wrappers = %w[sync-cursor-mini.sh sync-grok-mini.sh sync-codex-mini.sh]
+    wrappers.each do |name|
+      wrapper = File.join(ROOT, 'automation', name)
+      run(env, 'bash', wrapper, 'mini', '--quiet')
+      conflict = File.join(remote_home, '.agents/skills/shared/SKILL.md')
+      write(conflict, "unique Mini work\n")
+      _out, err, status = run(env, 'bash', wrapper, 'mini', '--quiet') { true }
+      assert(!status.success? && err.include?('preserved for review'), "#{name} hid a conflict: #{err}")
+      assert(File.read(conflict) == "unique Mini work\n", "#{name} overwrote Mini skill")
+      write(conflict, "shared skill\n")
+      %w[all verify].each do |failure|
+        _out, err, status = run(env.merge('SYNC_FAIL_RSYNC' => failure), 'bash', wrapper, 'mini', '--quiet') { true }
+        assert(!status.success? && err.include?('injected transfer failure'), "#{name} hid #{failure} failure")
+      end
+    end
+    hook = File.join(remote_home, '.grok/hooks/sane-guards.json')
+    assert(File.read(hook) == "{}\n", 'native Grok hooks not copied')
+    write(hook, "unique Mini hooks\n")
+    _out, err, status = run(env, 'bash', File.join(ROOT, 'automation/sync-grok-mini.sh'), 'mini', '--quiet') { true }
+    assert(!status.success? && File.read(hook) == "unique Mini hooks\n", "native hook conflict lost: #{err}")
+    %w[.cursor/hooks.json .grok/config.toml].each do |rel|
+      assert(File.read(File.join(remote_home, rel)) == "mini-owned\n", "#{rel} was overwritten")
+    end
+    assert(File.read(File.join(remote_home, '.agents/skills/mini-only/SKILL.md')) == "mini-only\n", 'peer-only skill deleted')
+    guard = File.join(remote_home, '.local/bin/curl')
+    FileUtils.rm(guard)
+    write(guard, "host-owned guard\n")
+    _out, _err, status = run(env, 'bash', SYNC, 'mini', '--quiet') { true }
+    assert(!status.success? && File.read(guard) == "host-owned guard\n", 'existing guard path overwritten')
+    critical = File.join(remote_home, 'SaneApps/infra/SaneProcess/scripts/validation_report.rb')
+    write(critical, "unique Mini code\n")
+    _out, err, status = run(env, 'bash', SYNC, 'mini', '--quiet') { true }
+    assert(!status.success? && File.read(critical) == "unique Mini code\n", "dirty peer code changed: #{err}")
+    write(File.join(home, 'SaneApps/infra/SaneProcess/scripts/automation/check_inbox_report_test.py'), "raise SystemExit(1)\n")
+    _out, err, status = run(env, 'bash', SYNC, 'mini', '--quiet') { true }
+    assert(!status.success? && err.include?('contract suite'), 'failed support gate was reported as sync success')
   end
 end
 
@@ -342,8 +352,11 @@ tests << lambda do
     FORBIDDEN_AUTOMATION_PATHS.each do |token|
       assert(lines.none? { |line| line.include?(token) }, "reconcile touched #{token}: #{lines}")
     end
-    assert(File.read(START_WORKDAY).include?('"$MINI_HOST" --no-restart'),
-           'start-workday must never interrupt an active Mini Codex process')
+    write(File.join(automation_dir, 'sync-control-plane.sh'), "#!/bin/bash\nprintf 'workday-sync %s\\n' \"$*\" >> \"$RECONCILE_LOG\"\n", executable: true)
+    write(File.join(bin_dir, 'scp'), "#!/bin/sh\nexit 0\n", executable: true)
+    run(env, 'bash', START_WORKDAY, 'mini', '--no-open')
+    assert(File.readlines(log, chomp: true).include?('workday-sync mini --quiet'),
+           'start-workday must use shared sync without restart flags')
   end
 end
 

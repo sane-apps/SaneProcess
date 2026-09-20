@@ -19,20 +19,18 @@ module SaneMasterModules
         if !pressure && expensive.include?(path)
           skips << {
             type: 'skip', category: 'expensive_cache_preserved', path: path, size_gb: size_gb,
-            reason: "Expensive-to-restore cache preserved while free space is healthy: #{size_gb}G."
+            reason: "Expensive-to-restore cache preserved: #{size_gb}G. Only reclaimed under disk pressure."
           }
           next
         end
-        next if size_gb < 0.25 && total_disposable_cache_gb < options[:cache_threshold_gb]
+        next if size_gb < options[:cache_threshold_gb].to_f
 
         list << {
           type: 'trash_path', category: 'disposable_cache', path: path, size_gb: size_gb,
-          reason: 'Disposable developer cache; safe to regenerate.'
+          reason: 'Disposable developer cache; safe to regenerate. Planned by kind, not free space.'
         }
       end
       targets.concat(machine_cleanup_uv_cache_targets)
-      return skips if targets.sum { |target| target[:size_gb].to_f } < options[:cache_threshold_gb]
-
       skips + targets
     end
 
@@ -72,14 +70,6 @@ module SaneMasterModules
       machine_cleanup_ps_rows.each_with_object([]) do |row, names|
         row[:command].to_s.scan(%r{\.cache/uv/archive-v0/([^/\s]+)}) { |match| names << match.first }
       end.uniq
-    end
-
-    def total_disposable_cache_gb
-      paths = SaneMasterModules::MachineCleanup::DISPOSABLE_CACHE_PATHS
-      @total_disposable_cache_gb ||= paths.sum do |raw_path|
-        path = File.expand_path(raw_path)
-        File.exist?(path) ? path_size_gb(path) : 0.0
-      end
     end
   end
 end

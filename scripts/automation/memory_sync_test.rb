@@ -22,14 +22,143 @@ def memory_paths(home)
   ]
 end
 
-def run_sync(air, mini, strict: true, path: '/usr/bin:/bin:/usr/sbin:/sbin')
+def run_sync(air, mini, strict: true, path: '/usr/bin:/bin:/usr/sbin:/sbin', env: {})
   args = ['/bin/bash', SCRIPT, '--local-peer-home', mini]
   args << '--strict' if strict
-  Open3.capture3({ 'HOME' => air, 'PATH' => path }, *args)
+  bounded_capture({ 'HOME' => air, 'PATH' => path }.merge(env), *args)
+end
+
+def bounded_capture(env, *args, seconds: 12)
+  Open3.popen3(env, *args, pgroup: true) do |input, output, error, waiter|
+    input.close
+    out = Thread.new { output.read }
+    err = Thread.new { error.read }
+    unless waiter.join(seconds)
+      Process.kill('KILL', -waiter.pid) rescue Errno::ESRCH
+      waiter.join
+      raise "fixture exceeded #{seconds}s"
+    end
+    [out.value, err.value, waiter.value]
+  end
 end
 
 exit(run_tests('Memory Sync Tests') do
   test_category('two-way no-delete parity') do
+    test('large parity listings complete promptly without shell expansion') do
+      Dir.mktmpdir('memory-large-probe') do |dir|
+        source = File.read(SCRIPT)
+        probe = source[source.index('pair_has_drift() {')...source.index("\nsync_pair() {")]
+        command = <<~SH
+          LOCAL_PEER_HOME=fixture
+          rsync() { /usr/bin/awk 'BEGIN { for(i=0;i<50000;i++) print " >f+++++++++ large-listing-fixture.md" }'; }
+          #{probe}
+          pair_has_drift /tmp/fixture-a /tmp/fixture-b
+        SH
+        _out, err, status = bounded_capture({'TMPDIR' => dir}, '/bin/bash', '-c', command, seconds: 5)
+        assert(status.success?, err)
+        assert(Dir.children(dir).empty?, 'probe leaked listing files')
+        true
+      end
+    end
+
+    test('a failed second probe cannot be mistaken for drift or parity') do
+      Dir.mktmpdir('memory-second-probe') do |dir|
+        source = File.read(SCRIPT)
+        probe = source[source.index('pair_has_drift() {')...source.index("\nsync_pair() {")]
+        command = <<~SH
+          LOCAL_PEER_HOME=fixture
+          calls=0
+          rsync() { calls=$((calls + 1)); [ "$calls" -eq 1 ] && { echo '>f+ drift'; return 0; }; return 23; }
+          #{probe}
+          pair_has_drift /tmp/fixture-a /tmp/fixture-b
+        SH
+        _out, _err, status = bounded_capture({'TMPDIR' => dir}, '/bin/bash', '-c', command)
+        assert_eq(status.exitstatus, 2)
+        assert(Dir.children(dir).empty?, 'failed probe leaked listing files')
+        true
+      end
+    end
+
+    test('local lock rejects a second process before touching either memory store') do
+      Dir.mktmpdir('memory-local-lock') do |dir|
+        air = File.join(dir, 'air')
+        mini = File.join(dir, 'mini')
+        FileUtils.mkdir_p(File.join(air, '.cache'))
+        File.open(File.join(air, '.cache', 'saneapps-memory-sync.local.lock'), 'w') do |lock|
+          lock.flock(File::LOCK_EX)
+          out, err, status = run_sync(air, mini)
+          assert(!status.success?, out + err)
+          assert_includes(err, 'another sync owns the local lock')
+          assert(!File.exist?(mini), 'blocked run touched the peer')
+        end
+        true
+      end
+    end
+
+    test('deadline kills a stuck process group and the next run recovers locks') do
+      Dir.mktmpdir('memory-deadline') do |dir|
+        air = File.join(dir, 'air')
+        mini = File.join(dir, 'mini')
+        (memory_paths(air) + memory_paths(mini)).each { |path| FileUtils.mkdir_p(path) }
+        bin = File.join(dir, 'bin')
+        FileUtils.mkdir_p(bin)
+        pids = File.join(dir, 'pids')
+        fake_rsync = File.join(bin, 'rsync')
+        File.write(fake_rsync, "#!/bin/bash\ntrap '' TERM\nsleep 60 &\nprintf '%s %s' \"$$\" \"$!\" > \"$FIXTURE_PIDS\"\nwait\n")
+        FileUtils.chmod(0o755, fake_rsync)
+        out, err, status = run_sync(air, mini, path: "#{bin}:/usr/bin:/bin:/usr/sbin:/sbin",
+                                   env: {'SANE_MEMORY_SYNC_TIMEOUT' => '1', 'FIXTURE_PIDS' => pids})
+        assert_eq(status.exitstatus, 124, out + err)
+        assert_includes(err, 'exceeded 1s')
+        File.read(pids).split.each do |pid|
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+          alive = true
+          while alive && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+            alive = begin Process.kill(0, Integer(pid)); true; rescue Errno::ESRCH; false; end
+            sleep 0.05 if alive
+          end
+          assert(!alive, "descendant #{pid} survived deadline")
+        end
+        _out, err, status = run_sync(air, mini)
+        assert(status.success?, err)
+        assert(!File.exist?(File.join(mini, '.cache', 'saneapps-memory-sync.lock')))
+        true
+      end
+    end
+
+    test('service termination exits promptly and releases its locks') do
+      Dir.mktmpdir('memory-terminate') do |dir|
+        air = File.join(dir, 'air')
+        mini = File.join(dir, 'mini')
+        (memory_paths(air) + memory_paths(mini)).each { |path| FileUtils.mkdir_p(path) }
+        bin = File.join(dir, 'bin')
+        FileUtils.mkdir_p(bin)
+        ready = File.join(dir, 'ready')
+        File.write(File.join(bin, 'rsync'), "#!/bin/sh\ntouch \"$FIXTURE_READY\"\nexec sleep 60\n")
+        FileUtils.chmod(0o755, File.join(bin, 'rsync'))
+        env = {'HOME' => air, 'PATH' => "#{bin}:/usr/bin:/bin:/usr/sbin:/sbin", 'FIXTURE_READY' => ready}
+        Open3.popen3(env, '/bin/bash', SCRIPT, '--local-peer-home', mini, '--strict', pgroup: true) do |input, output, error, waiter|
+          input.close
+          stdout = Thread.new { output.read }
+          stderr = Thread.new { error.read }
+          begin
+            deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 3
+            sleep 0.05 until File.exist?(ready) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+            assert(File.exist?(ready), 'fixture did not start')
+            Process.kill('TERM', waiter.pid)
+            assert(waiter.join(5), 'service ignored TERM')
+            assert_eq(waiter.value.exitstatus, 143, stdout.value + stderr.value)
+          ensure
+            Process.kill('KILL', -waiter.pid) rescue Errno::ESRCH
+          end
+        end
+        _out, err, status = run_sync(air, mini)
+        assert(status.success?, err)
+        assert(!File.exist?(File.join(mini, '.cache', 'saneapps-memory-sync.lock')))
+        true
+      end
+    end
+
     test('unions one-sided files in both directions') do
       Dir.mktmpdir('memory-sync') do |root|
         air = File.join(root, 'air')
@@ -180,6 +309,7 @@ exit(run_tests('Memory Sync Tests') do
         assert_includes(source, '<key>RunAtLoad</key>')
         assert_includes(source, '<key>StartInterval</key>')
         assert_includes(source, '<integer>900</integer>')
+        assert_includes(source, "<key>Nice</key>\n  <integer>10</integer>")
         tunnel_source = File.read(tunnel_plist)
         assert_includes(tunnel_source, '<string>com.saneapps.agentmemory-tunnel</string>')
         assert_includes(tunnel_source, '<string>--tunnel</string>')
@@ -187,6 +317,21 @@ exit(run_tests('Memory Sync Tests') do
         assert_includes(tunnel_source, '<key>KeepAlive</key>')
         assert_includes(tunnel_source, '<key>ThrottleInterval</key>')
         assert_includes(tunnel_source, 'agentmemory_tunnel.stderr.log')
+        bin = File.join(dir, 'bin')
+        FileUtils.mkdir_p(bin)
+        File.write(File.join(bin, 'hostname'), "#!/bin/sh\necho fixture-air\n")
+        File.write(File.join(bin, 'launchctl'), <<~SH)
+          #!/bin/sh
+          case "$1" in
+            enable) touch "$HOME/$(basename "$2").enabled" ;;
+            bootstrap) test -f "$HOME/com.saneapps.memory-sync.enabled" && test -f "$HOME/com.saneapps.agentmemory-tunnel.enabled" ;;
+            bootout) exit 0 ;;
+            *) exit 2 ;;
+          esac
+        SH
+        FileUtils.chmod(0o755, Dir.glob(File.join(bin, '*')))
+        _live_out, live_err, live_status = bounded_capture(env.merge('PATH' => "#{bin}:/usr/bin:/bin:/usr/sbin:/sbin"), '/bin/bash', File.join(fixture_dir, 'install-memory-sync-agent.sh'))
+        assert(live_status.success?, live_err)
         _bad_out, bad_err, bad_status = Open3.capture3(env, '/bin/bash', File.join(fixture_dir, 'install-memory-sync-agent.sh'), 'mini')
         assert(!bad_status.success?, 'installer silently accepted an unknown host argument')
         assert_includes(bad_err, 'Usage:')
@@ -262,7 +407,11 @@ exit(run_tests('Memory Sync Tests') do
         assert_includes(ssh, 'ExitOnForwardFailure=yes')
         assert_includes(ssh, 'ServerAliveInterval=15')
         assert_includes(ssh, 'ServerAliveCountMax=3')
-        assert_includes(ssh, '-L 3111:127.0.0.1:3111 mini')
+        assert_includes(ssh, '-L 3111:127.0.0.1:3111')
+        assert_includes(ssh, '-L 37911:127.0.0.1:37911')
+        assert_includes(ssh, '-L 37913:127.0.0.1:37913')
+        assert_includes(ssh, '-L 37915:127.0.0.1:37915')
+        assert_includes(ssh, ' mini')
         true
       end
     end

@@ -9,6 +9,17 @@ require 'tmpdir'
 include TestFramework
 
 exit(run_tests('Tool discovery receipt tests') do
+  test_category('Runtime capture routing') do
+    test('live app discovery preserves default logging and explains quiet saved capture') do
+      receipt = ToolDiscoveryReceipt.new(['--query', 'runtime launch smoke', '--skip-doctor', '--skip-validation'])
+      route = receipt.send(:canonical_path_matches).find { |entry| entry[:name] == 'Run and verify a live app' }
+      assert_eq(route[:command], 'ruby scripts/SaneMaster.rb test_mode --release')
+      assert_includes(route[:why], 'Saves evidence before launch')
+      assert_includes(route[:why], '--quiet-logs')
+      true
+    end
+  end
+
   test_category('Health status') do
     test('mcp health check uses watchdog plus live active-session probe') do
       receipt = ToolDiscoveryReceipt.new(['--query', 'mcp health', '--skip-validation'])

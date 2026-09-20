@@ -87,10 +87,13 @@ fi
 "$LAUNCHCTL" enable "gui/$uid/$LABEL" 2>/dev/null || \
   "$SUDO" -n "$LAUNCHCTL" enable "gui/$uid/$LABEL" 2>/dev/null || true
 echo "Installed $LABEL; waiting for AgentMemory health"
+CURL="${SANE_CURL_BIN:-/usr/bin/curl}"
+LIVEZ_URL="${SANE_AGENTMEMORY_LIVEZ_URL:-http://127.0.0.1:3111/agentmemory/livez}"
 attempt=1
-while [ "$attempt" -le 15 ]; do
+while [ "$attempt" -le 30 ]; do
   status_output="$($AGENTMEMORY status 2>&1 || true)"
-  if printf '%s\n' "$status_output" | grep -Eq 'Health:[[:space:]].*healthy'; then
+  if printf '%s\n' "$status_output" | grep -Eq 'Health:[[:space:]].*healthy' && \
+     "$CURL" --silent --fail --max-time 2 "$LIVEZ_URL" >/dev/null 2>&1; then
     echo "Started healthy $LABEL"
     exit 0
   fi
@@ -99,5 +102,5 @@ while [ "$attempt" -le 15 ]; do
 done
 
 printf '%s\n' "$status_output" >&2
-echo "AgentMemory did not become healthy within 30 seconds" >&2
+echo "AgentMemory did not become healthy within 60 seconds (CLI health + livez required)" >&2
 exit 1

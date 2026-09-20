@@ -22,11 +22,18 @@ if nc -z -G 2 "$MINI_LAN_HOST" "$PORT" >/dev/null 2>&1; then
   exec nc "$MINI_LAN_HOST" "$PORT"
 fi
 
-TS="$(command -v tailscale || true)"
-if [ -z "${TS}" ] && [ -x /opt/homebrew/bin/tailscale ]; then
-  TS=/opt/homebrew/bin/tailscale
+# SSH ProxyCommand PATH is often just /usr/bin:/bin. Prefer the installed
+# wrapper so off-LAN `ssh mini` still uses the userspace Tailscale daemon.
+WRAPPER="${SANE_TAILSCALE_WRAPPER:-$HOME/.local/bin/tailscale}"
+if [ -x "$WRAPPER" ]; then
+  TS="$WRAPPER"
+else
+  TS="$(command -v tailscale || true)"
+  if [ -z "${TS}" ] && [ -x /opt/homebrew/bin/tailscale ]; then
+    TS=/opt/homebrew/bin/tailscale
+  fi
 fi
-if [ -n "${TS}" ]; then
+if [ -n "$TS" ]; then
   # Do NOT pass --socket here when TS is ~/.local/bin/tailscale — that wrapper
   # already selects the userspace daemon. Injecting --socket made
   # `ping -c 1 --timeout=3s` fail under ProxyCommand while a bare
@@ -42,7 +49,9 @@ if [ -n "${TS}" ]; then
       fi
       ;;
   esac
-  if "$TS" ${TS_ARGS[@]+"${TS_ARGS[@]}"} ping -c 1 --timeout=5s "$MINI_TS_HOST" >/dev/null 2>&1; then
+  # --until-direct=false: off-LAN pings often stay on DERP. Default
+  # until-direct=true makes ping exit 1 after a successful relay pong.
+  if "$TS" ${TS_ARGS[@]+"${TS_ARGS[@]}"} ping --until-direct=false -c 1 --timeout=5s "$MINI_TS_HOST" >/dev/null 2>&1; then
     exec "$TS" ${TS_ARGS[@]+"${TS_ARGS[@]}"} nc "$MINI_TS_HOST" "$PORT"
   fi
 fi

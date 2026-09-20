@@ -50,6 +50,7 @@ end
 
 include TestFramework
 
+
 def assert_raises(error_class = StandardError)
   begin
     yield
@@ -122,6 +123,14 @@ exit(run_tests('Upgrade Path Proof Security Tests') do
   monitor_subject = UpgradeMonitorBindingHarness.new
 
   test_category('canonical runner and concrete evidence') do
+    test('unsigned mode reaches the canonical runner only when selected') do
+      argv = subject.send(
+        :upgrade_path_runner_argv, scheme: 'Example', test_selector: 'ExampleTests/Upgrade',
+        timeout_seconds: 30, unsigned: true
+      )
+      assert(argv.include?('--unsigned'))
+    end
+
     test('runner is fixed to canonical SaneMaster monitor_tests with an exact selector') do
       argv = subject.send(
         :upgrade_path_runner_argv,

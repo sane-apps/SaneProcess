@@ -2889,12 +2889,20 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
     end
 
     test('customer UI receipt host accepts full Mini hostname') do
-      with_env('SANE_APPROVE_LOCAL_UI_ON_AIR' => nil) do
+      with_env('SANE_APPROVE_LOCAL_UI_ON_AIR' => nil, 'SANE_MINI_UNAVAILABLE' => nil) do
         assert(subject.send(:customer_ui_receipt_host_allowed?, 'mini'))
         assert(subject.send(:customer_ui_receipt_host_allowed?, 'stephans-mac-mini.local'))
         assert(subject.send(:customer_ui_receipt_host_allowed?, 'Stephans-Mac-Mini'))
         assert(!subject.send(:customer_ui_receipt_host_allowed?, 'stephansmac'))
         assert(!subject.send(:customer_ui_receipt_host_allowed?, 'macbook-air'))
+      end
+      true
+    end
+
+    test('customer UI Air fallback accepts Air host when Mini is unavailable') do
+      with_env('SANE_MINI_UNAVAILABLE' => 'MR. SANE CONFIRMS MINI UNAVAILABLE') do
+        assert(subject.send(:customer_ui_air_fallback_approved?))
+        assert(subject.send(:customer_ui_receipt_host_allowed?, 'stephans-macbook-air.local'))
       end
       true
     end
@@ -6489,6 +6497,9 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(!release_script.include?('digest.update("SaneProcess/'),
              'release.sh must not carry an inline copy of the fingerprint digest')
       assert_includes(release_script, 'customer UI receipt is stale for release_preflight reuse')
+      assert_includes(release_script, "policy_only = ENV['SANEPROCESS_RELEASE_POLICY_ONLY'] == '1'")
+      assert_includes(release_script, 'if customer_ui_manifest && !policy_only')
+      assert_includes(release_script, 'if migration_files.any? && !policy_only')
       assert_includes(release_script, 'Project QA guardrails covered by fresh SaneMaster release_preflight receipt')
       true
     end
@@ -6569,8 +6580,8 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(push_helper, 'Refusing to push detached release metadata without a verified reconcile branch.')
       assert_includes(push_helper, 'HEAD:refs/heads/${release_branch}')
       assert(!push_helper.include?('push --force'), 'release metadata must never force-push a branch')
-      assert_operator(release_script.scan('push_project_release_head').length, :>=, 3,
-                      'both version and release metadata syncs must use the guarded push helper')
+      assert(release_script.scan('push_project_release_head').length >= 3,
+             'both version and release metadata syncs must use the guarded push helper')
       true
     end
 

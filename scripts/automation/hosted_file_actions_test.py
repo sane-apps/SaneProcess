@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 import importlib.util
 import tempfile
+import json
+import os
+import subprocess
+import sys
+import urllib.error
 import unittest
 import zipfile
 from pathlib import Path
@@ -15,6 +20,85 @@ SCRIPT_SPEC.loader.exec_module(HOSTED_FILE_ACTIONS)
 
 
 class HostedFileActionTests(unittest.TestCase):
+    def test_api_errors_fail_closed_without_disclosing_credentials(self):
+        with mock.patch.object(HOSTED_FILE_ACTIONS.urllib.request, "urlopen", side_effect=urllib.error.URLError("secret-response")):
+            with self.assertRaisesRegex(RuntimeError, "API read failed") as error:
+                HOSTED_FILE_ACTIONS.fetch_json("https://api.lemonsqueezy.com/v1/files", "private-key")
+            self.assertNotIn("secret-response", str(error.exception))
+            self.assertNotIn("private-key", str(error.exception))
+        for payload in (None, {}, {"data": None}, {"data": [], "errors": ["failure"]}):
+            with mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_json", return_value=payload):
+                with self.assertRaises(RuntimeError):
+                    HOSTED_FILE_ACTIONS.fetch_collection("/v1/files", "test")
+
+    def test_collection_follows_pages_and_rejects_foreign_next_link(self):
+        pages = [{"data": [{"id": "1"}], "links": {"next": "https://api.lemonsqueezy.com/v1/files?page=2"}}, {"data": [{"id": "2"}]}]
+        with mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_json", side_effect=pages):
+            self.assertEqual([r["id"] for r in HOSTED_FILE_ACTIONS.fetch_collection("/v1/files", "test")], ["1", "2"])
+        with mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_json", return_value={"data": [], "links": {"next": "https://foreign.example/v1/files"}}) as fetch:
+            with self.assertRaises(RuntimeError):
+                HOSTED_FILE_ACTIONS.fetch_collection("/v1/files", "test")
+            self.assertEqual(fetch.call_count, 1)
+
+    def test_drafts_are_not_published_evidence(self):
+        self.assertIsNone(HOSTED_FILE_ACTIONS.select_display_file([
+            {"attributes": {"status": "draft", "name": "App-1.0.0.zip"}}
+        ], "1.0.0"))
+
+    def test_ambiguous_variant_mapping_fails_closed(self):
+        with self.assertRaises(RuntimeError):
+            HOSTED_FILE_ACTIONS.find_variant_record("1", [
+                {"id": "a", "attributes": {"product_id": 1}},
+                {"id": "b", "attributes": {"product_id": 1}},
+            ])
+
+    def test_published_variant_preferred_when_draft_sibling_exists(self):
+        chosen = HOSTED_FILE_ACTIONS.find_variant_record("1", [
+            {"id": "draft", "attributes": {"product_id": 1, "status": "pending", "name": ""}},
+            {"id": "live", "attributes": {"product_id": 1, "status": "published", "name": "Default"}},
+        ])
+        self.assertEqual(chosen["id"], "live")
+
+    def test_explicit_lemon_variant_id_wins(self):
+        chosen = HOSTED_FILE_ACTIONS.find_variant_record(
+            "1",
+            [
+                {"id": "draft", "attributes": {"product_id": 1, "status": "pending"}},
+                {"id": "live", "attributes": {"product_id": 1, "status": "published"}},
+            ],
+            preferred_variant_id="draft",
+        )
+        self.assertEqual(chosen["id"], "draft")
+
+    def test_newer_hosted_file_requires_release_evidence_not_downgrade(self):
+        config = {"products": {"test": {"name": "App", "appcast": "https://example.com/feed"}}}
+        inventory = [
+            [{"id": "1", "attributes": {"name": "App"}}],
+            [{"id": "2", "attributes": {"product_id": 1}}],
+            [{"attributes": {"status": "published", "name": "App-1.0.2.zip"}}],
+        ]
+        with mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_collection", side_effect=inventory), mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_appcast_release", return_value=("1.0.1", "https://example.com/App-1.0.1.zip")):
+            actions, snapshot = HOSTED_FILE_ACTIONS.build_snapshot_rows(config, "test")
+        self.assertEqual(snapshot[0]["status"], "Needs release evidence")
+        self.assertIn("do not downgrade or remove", actions[0]["instructions"])
+
+    def test_release_parser_requires_matching_affirmative_snapshot(self):
+        release = SCRIPT_PATH.parents[1].joinpath("release.sh").read_text()
+        section = release.split("verify_lemonsqueezy_hosted_file_sync() {", 1)[1]
+        parser = section.split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        good = {"app": "App", "expected_version": "1.0.1", "hosted_version": "1.0.1", "status": "In sync", "published_file_count": "1", "variant_id": "1"}
+        fixtures = [({}, False), ({"current_actions": []}, False),
+                    ({"snapshot": [good]}, True),
+                    ({"snapshot": [{**good, "expected_version": "1.0.0"}]}, False),
+                    ({"snapshot": [{**good, "published_file_count": "0"}]}, False),
+                    ({"snapshot": [{**good, "hosted_version": "1.0.0"}]}, False),
+                    ({"snapshot": [good, good]}, False)]
+        for payload, passes in fixtures:
+            with self.subTest(payload=payload):
+                env = {**os.environ, "APP_NAME": "App", "EXPECTED_VERSION": "1.0.1", "HOSTED_FILE_ACTIONS_JSON": json.dumps(payload)}
+                result = subprocess.run([sys.executable, "-c", parser], env=env, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode == 0, passes, result.stderr)
+
     def test_extract_version_from_filename(self):
         self.assertEqual(
             HOSTED_FILE_ACTIONS.extract_version_from_filename("SaneBar-2.1.39.zip"),
@@ -75,7 +159,7 @@ class HostedFileActionTests(unittest.TestCase):
         self.assertEqual(actions[0]["extra_filenames"], "SaneBar-2.1.36.zip")
         self.assertEqual(actions[0]["dashboard_url"], "https://app.lemonsqueezy.com/products/778575")
         self.assertIn("variant 1227172", actions[0]["instructions"])
-        self.assertIn("delete or unpublish old files", actions[0]["instructions"])
+        self.assertIn("verify the published replacement download", actions[0]["instructions"])
         self.assertEqual(snapshot[0]["status"], "Needs dashboard sync")
 
     def test_build_snapshot_rows_flags_extra_published_files_when_latest_exists(self):
@@ -130,7 +214,7 @@ class HostedFileActionTests(unittest.TestCase):
         self.assertEqual(actions[0]["hosted_version"], "2.1.39")
         self.assertEqual(actions[0]["published_file_count"], "2")
         self.assertEqual(actions[0]["extra_filenames"], "SaneBar-2.1.36.zip")
-        self.assertIn("leave only SaneBar-2.1.39.zip published", actions[0]["instructions"])
+        self.assertIn("verify the published replacement downloads correctly", actions[0]["instructions"])
         self.assertEqual(snapshot[0]["status"], "Needs dashboard cleanup")
 
     def test_build_snapshot_rows_does_not_infer_cleanup_when_appcast_version_is_missing(self):
@@ -304,6 +388,8 @@ class HostedFileActionTests(unittest.TestCase):
 
             audit = HOSTED_FILE_ACTIONS.audit_upload_folder(uploads_path, snapshot)
 
+            self.assertEqual(audit["stale_files"][0]["status"], "different_from_appcast")
+            self.assertEqual(audit["ok_files"][0]["status"], "filename_match")
             self.assertEqual(audit["stale_files"][0]["filename"], "SaneBar-2.1.47.zip")
             self.assertEqual(audit["stale_files"][0]["expected_filename"], "SaneBar-2.1.48.zip")
             self.assertEqual(audit["missing_latest"][0]["expected_filename"], "SaneBar-2.1.48.zip")

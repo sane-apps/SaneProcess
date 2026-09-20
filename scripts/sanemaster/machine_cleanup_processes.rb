@@ -158,9 +158,10 @@ module SaneMasterModules
     end
 
     def machine_cleanup_codex_process?(executable, command)
-      executable.include?('/Applications/Codex.app/Contents/MacOS/') ||
-        command.start_with?('/Applications/Codex.app/Contents/MacOS/') ||
-        command.start_with?('Codex (Service)') || command.start_with?('Codex (Renderer)')
+      %w[Codex ChatGPT].any? do |app|
+        prefix = "/Applications/#{app}.app/Contents/MacOS/"
+        executable.start_with?(prefix) || command.start_with?(prefix)
+      end || command.start_with?('Codex (Service)') || command.start_with?('Codex (Renderer)')
     end
 
     def machine_cleanup_mcp_process?(command, basename)

@@ -135,6 +135,17 @@ recent_lookup_count() {
   awk -F'|' -v cutoff="$cutoff" '($1 ~ /^[0-9]+$/) && ($1 >= cutoff) { count++ } END { print count + 0 }' "$HISTORY_FILE"
 }
 
+# Explicit no-prompt policy also applies outside AI sessions and to client auth.
+# Fail before invoking security: even the first secret read may open a dialog.
+if is_secret_read "${1:-}" && {
+  [[ "${SANE_NO_KEYCHAIN:-0}" == "1" ]] ||
+  [[ "${SANE_KEYCHAIN_FALLBACK:-1}" == "0" ]] ||
+  [[ "${SANE_ALLOW_KEYCHAIN_PROMPTS:-1}" == "0" ]]
+}; then
+  echo "BLOCKED: Keychain secret lookup disabled by no-prompt policy. Use cached credentials." >&2
+  exit 2
+fi
+
 guarded=0
 
 if is_ai_session && is_secret_read "${1:-}" && ! is_claude_auth "$@"; then

@@ -61,6 +61,7 @@ The API compatibility gate blocks known newer-SDK symbols that can crash before 
 - If appcast history is kept, every advertised enclosure URL must resolve.
 - Do not delete historical direct-download binaries by default. Only purge them intentionally after also pruning any public references.
 - A docs-only/appcast repair deploy is valid when the feed is wrong and the binary is not changing.
+- Scope: this history rule governs R2/appcast downloads; the Lemon Squeezy storefront rule (keep only the newest ZIP listed) lives in the hosted-file handoff below.
 
 Preflight review requirement:
 - Review every open bug-like GitHub issue that could plausibly affect the release, including tint/appearance, updater behavior, build-from-source, browse/focus, and layout/reset issues.
@@ -198,7 +199,7 @@ ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \
 ./scripts/SaneMaster.rb appstore_preflight  # active App Store lanes only
 ```
 
-6. Repair the ASC lane before upload:
+8. Repair the ASC lane before upload:
 
 ```bash
 ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
@@ -213,12 +214,12 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
   --preflight-version-state
 ```
 
-7. Build/export with the standard release script, then submit the pkg with `appstore_submit.rb`.
+9. Build/export with the standard release script, then submit the pkg with `appstore_submit.rb`.
 - Use full `release.sh --deploy` only when the direct channel should also ship.
 - Use build/export plus `appstore_submit.rb --pkg` when you only need to repair the App Store lane.
 - `release.sh` runs `./scripts/SaneMaster.rb appstore_preflight` before any active App Store submit step. Direct-download-only apps skip this lane because `.saneprocess appstore.enabled: false` is authoritative.
 
-### 0d. Mini Visual Verification Workflow
+### 0c. Mini Visual Verification Workflow
 
 For user-facing desktop changes, do visual verification on the Mini before release.
 
@@ -244,17 +245,70 @@ Run this wrapper from the controlling machine with Codex installed. It copies th
 
 - This wrapper copies the shared screenshot helper to the Mini and runs it through `mini-gui-run.sh`.
 - It is the canonical live-window path.
-- First use may require one-time Screen Recording permission for Terminal on the Mini.
+- First use follows the expected permission branch: grant one-time Screen Recording permission for Terminal on the Mini, then re-run the capture.
 
 3. If live capture is blocked, use a deterministic render artifact from tests.
 
 - For SwiftUI settings/screens, prefer test-generated PNG renders over guessing from logs.
 - Save at least one visual artifact for the release record.
 
+#### Capture-agent queue fallback (when live capture is blocked)
+
+Agent `com.saneapps.mini-screenshot` runs in the Mini GUI session (which holds
+the Screen Recording grant) and serves `~/.sane/capture-queue`: write
+`request-<id>.json`, poll `receipt-<id>.json`. From the Air:
+
+```bash
+ssh mini 'cat > ~/.sane/capture-queue/request-air1.json' <<'EOF'
+{"id": "air1", "args": ["desktop", "--skip-cleanup"]}
+EOF
+# poll up to ~2 min for ~/.sane/capture-queue/receipt-air1.json:
+# {"id","exit","png","error"} — exit 0 + png path = success, nonzero = stop, no retry loop
+scp mini:<png-from-receipt> <local-path>   # then inspect, then delete BOTH sides + receipt + request (queue must end empty)
+```
+
+Never fall back to raw `screencapture` over SSH (blocked by
+`sane_bash_guards.rb`, wrong TCC identity). Full recipe:
+`scripts/mini/SCREENSHOT_TOOLS.md` (agent section).
+
 Hard rule:
 - Do not claim a user-facing fix is visually verified unless you have a saved screenshot/render from the Mini path or the deterministic render lane.
 
-### 0c. Setapp Lane Prep
+### Lemon Squeezy hosted-file handoff
+
+Run the existing read-only inventory on the Mini:
+`SANE_NO_KEYCHAIN=1 SANE_ENV_CACHE_WRITE=0 ruby scripts/SaneMaster.rb hosted_file_actions --json`.
+Use its product ID, variant ID and dashboard URL; an API error, missing app row,
+ambiguous variant or empty action list does not prove an update. `In sync` means
+published filename/version metadata matches the appcast, not byte or runtime proof.
+If hosted files are newer than the feed, reconcile release evidence before changing
+anything. A disabled new-purchase checkout does not remove existing buyers' access.
+
+1. Finish the app's release/runtime gates and identify the approved signed archive,
+   version, SHA-256 and compatibility requirements. Stage that exact version with
+   `ruby scripts/stage_lemonsqueezy_uploads.rb --project <app-dir> --version X.Y.Z`.
+   The stager verifies local SHA-256 and retains earlier archives; it does not publish.
+2. Reuse the signed-in Mini Brave product editor, check the product and variant,
+   then upload the approved archive through Files. Re-read after each action and
+   confirm the replacement is published before proceeding.
+3. Re-read the file API and verify the customer download's bytes/version/signing
+   against the approved archive. A successful upload click or matching filename
+   alone is insufficient. File download URLs are short-lived; do not publish them.
+4. Only after replacement proof, delete the superseded customer-visible hosted
+   files. Keep only the newest ZIP listed. Unpublishing is not enough; a leftover
+   old ZIP still listed means the hosted-file step is not done. Preserve private
+   rollback copies and archives still needed for supported OS compatibility.
+   Re-read the final variant file list and customer download surface; save the
+   file IDs, version and verification receipts.
+
+Official sources checked 2026-09-06: [file object](https://docs.lemonsqueezy.com/api/files/the-file-object),
+[list files](https://docs.lemonsqueezy.com/api/files/list-all-files),
+[product file editing](https://docs.lemonsqueezy.com/help/products/adding-products),
+[existing customer access](https://docs.lemonsqueezy.com/help/online-store/my-orders).
+The documented Files API supports read/list; use the existing dashboard for upload
+and deletion, not guessed private API endpoints.
+
+### 0d. Setapp Lane Prep
 
 Treat Setapp as a separate channel, not as a direct-build shortcut.
 

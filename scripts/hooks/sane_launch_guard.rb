@@ -16,6 +16,7 @@
 
 require 'json'
 require 'socket'
+require_relative 'core/hook_payload'
 require_relative 'core/local_ui_guard'
 
 SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneScan SaneSync SaneVideo].freeze
@@ -120,20 +121,20 @@ def running_on_macbook_air?
 end
 
 begin
-  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
-rescue JSON::ParserError, Errno::ENOENT
+  parsed = SaneHookPayload.parse($stdin.read.force_encoding(Encoding::UTF_8))
+rescue Errno::ENOENT
   exit 0
 end
 
-tool_name = input['tool_name']
+tool_name = parsed['tool_name']
 
 if tool_name.to_s.match?(LOCAL_UI_TOOL_PATTERN) &&
    running_on_macbook_air? &&
    ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] != LOCAL_UI_APPROVAL &&
    ENV['SANE_MINI_UNAVAILABLE'] != MINI_UNAVAILABLE_APPROVAL
-  target = (input['tool_input'] || {})['app'] ||
-           (input['tool_input'] || {})['application'] ||
-           (input['tool_input'] || {})['url'] ||
+  target = parsed['tool_input']['app'] ||
+           parsed['tool_input']['application'] ||
+           parsed['tool_input']['url'] ||
            'local UI'
   warn '🔴 BLOCKED: Local MacBook UI control'
   warn "   Tool: #{tool_name}"
@@ -146,15 +147,26 @@ if tool_name.to_s.match?(LOCAL_UI_TOOL_PATTERN) &&
   exit 2
 end
 
-exit 0 unless tool_name == 'Bash'
+exit 0 unless SaneHookPayload.shell?(tool_name) || (tool_name.empty? && !parsed['command'].empty?)
 
-command = (input['tool_input'] || {})['command'].to_s
+command = parsed['command']
 exit 0 if command.empty?
+
+if (reason = SaneLocalUIGuard.pasteboard_reason(command))
+  warn '🔴 BLOCKED: Controller pasteboard / Universal Clipboard'
+  warn "   #{reason}"
+  exit 2
+end
+
+if (reason = SaneLocalUIGuard.air_local_gui_reason(command))
+  warn '🔴 BLOCKED: Local MacBook UI control'
+  warn "   #{reason}"
+  exit 2
+end
 
 if command.match?(LOCAL_DASHBOARD_OPEN_PATTERN) &&
    running_on_macbook_air? &&
-   ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] != LOCAL_UI_APPROVAL &&
-   ENV['SANE_MINI_UNAVAILABLE'] != MINI_UNAVAILABLE_APPROVAL
+   !SaneLocalUIGuard.approved_local_ui?(command)
   warn '🔴 BLOCKED: Mini-first SaneApps dashboard/file open'
   warn "   Command: #{command}"
   warn ''
@@ -162,6 +174,7 @@ if command.match?(LOCAL_DASHBOARD_OPEN_PATTERN) &&
   warn '      App Store Connect, and other dashboards; Mini Finder for release upload artifacts.'
   warn '      Never script Safari (owner retired the ASC Safari exception 2026-07-15).'
   warn "     ssh mini 'open -R /path/on/mini'"
+  warn "   Fallback: prefix with SANE_APPROVE_LOCAL_UI_ON_AIR='#{LOCAL_UI_APPROVAL}'"
   exit 2
 end
 
@@ -190,13 +203,13 @@ if raw_app_build_test_command?(command)
   exit 2
 end
 
-# Block 1: Direct binary execution (breaks TCC)
+# Block 1: Direct binary execution bypasses the managed runtime lifecycle
 if command.match?(%r{Contents/MacOS/(#{SANE_APP_PATTERN})})
   warn '🔴 BLOCKED: Direct binary execution of SaneApp'
-  warn '   Running the binary directly breaks TCC permission grants.'
+  warn '   Direct execution bypasses the canonical build, launch, and runtime receipts.'
   warn ''
   warn '   ✅ Use instead: ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb <AppName>'
-  warn '   This resets TCC, builds fresh, deploys to mini, and launches via `open`.'
+  warn '   This rebuilds when needed, deploys to Mini, and launches with runtime logs.'
   exit 2
 end
 
@@ -204,10 +217,10 @@ end
 # Matches: open ~/Applications/SaneBar.app, open /tmp/SaneClip.app, ssh mini 'open ...'
 if command.match?(/open\s+.*\b(#{SANE_APP_PATTERN})\.app\b/)
   warn '🔴 BLOCKED: Manual launch of SaneApp'
-  warn '   Launching without TCC reset causes stale permissions.'
+  warn '   Manual launch bypasses stale-build checks and tracked runtime verification.'
   warn ''
   warn '   ✅ Use instead: ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb <AppName>'
-  warn '   Handles: kill → clean → TCC reset → build → deploy → launch → logs'
+  warn '   Preserves existing permissions; TCC repair requires an explicit repair option.'
   exit 2
 end
 

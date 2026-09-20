@@ -13,6 +13,7 @@
 # an unreachable peer or post-sync checksum drift.
 set -uo pipefail
 
+ORIGINAL_ARGS=("$@")
 MINI_HOST="mini"
 LOCAL_PEER_HOME=""
 STRICT=0
@@ -42,6 +43,59 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Keep serialization and the deadline outside Bash: a wedged expansion cannot
+# run a Bash watchdog or release its own lock. flock also recovers on crashes.
+if [[ "${SANE_MEMORY_SYNC_WORKER:-0}" != "1" ]]; then
+  exec /usr/bin/ruby - "$0" "$STRICT" "${ORIGINAL_ARGS[@]}" <<'RUBY'
+require 'fileutils'
+require 'tmpdir'
+script, strict, *args = ARGV
+limit = Integer(ENV.fetch('SANE_MEMORY_SYNC_TIMEOUT', '600'))
+abort 'sync-memory-mini: timeout must be between 1 and 3600 seconds' unless (1..3600).cover?(limit)
+FileUtils.mkdir_p(File.join(Dir.home, '.cache'))
+File.open(File.join(Dir.home, '.cache', 'saneapps-memory-sync.local.lock'), File::RDWR | File::CREAT, 0600) do |lock|
+  unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+    warn 'sync-memory-mini: another sync owns the local lock; skipped'
+    exit(strict == '1' ? 1 : 0)
+  end
+  Process.setpriority(Process::PRIO_PROCESS, 0, [10, Process.getpriority(Process::PRIO_PROCESS, 0)].max)
+  Dir.mktmpdir('sane-memory-sync-') do |temp|
+    pid = Process.spawn({'SANE_MEMORY_SYNC_WORKER' => '1', 'TMPDIR' => temp}, '/bin/bash', script, *args, pgroup: true)
+    waiter = Thread.new { Process.wait2(pid).last }
+    Signal.trap('TERM') { Thread.main.raise(Interrupt) }
+    Signal.trap('INT') { Thread.main.raise(Interrupt) }
+    result = 1
+    begin
+      if waiter.join(limit)
+        status = waiter.value
+        result = status.exitstatus || 128 + status.termsig
+      else
+        warn "sync-memory-mini: exceeded #{limit}s; stopping sync process group"
+        result = 124
+      end
+    rescue Interrupt
+      result = 143
+    ensure
+      # Always reap this run's descendants, even if its shell exited first.
+      Signal.trap('TERM', 'IGNORE')
+      Signal.trap('INT', 'IGNORE')
+      begin
+        Process.kill('TERM', -pid)
+      rescue Errno::ESRCH
+      end
+      waiter.join(2)
+      begin
+        Process.kill('KILL', -pid)
+      rescue Errno::ESRCH
+      end
+      waiter.join
+    end
+    exit result
+  end
+end
+RUBY
+fi
 
 SSH=(ssh -o ConnectTimeout=8 -o BatchMode=yes)
 LOCK_REL=".cache/saneapps-memory-sync.lock"
@@ -81,7 +135,9 @@ release_lock() {
     "${SSH[@]}" "$MINI_HOST" "test \"\$(cat '$REMOTE_HOME/$LOCK_REL/owner' 2>/dev/null)\" = '$LOCK_TOKEN' && rm -f '$REMOTE_HOME/$LOCK_REL/owner' && rmdir '$REMOTE_HOME/$LOCK_REL' || true" >/dev/null 2>&1 || true
   fi
 }
-trap release_lock EXIT INT TERM
+trap release_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 acquire_lock() {
   local owner owner_host owner_pid
@@ -197,16 +253,32 @@ rsync_remote() {
 }
 
 pair_has_drift() {
-  local local_dir="$1" remote_dir="$2" first second output
+  local local_dir="$1" remote_dir="$2" first_file second_file result
+  first_file="$(mktemp "${TMPDIR:-/tmp}/sane-memory-sync-first.XXXXXX")" || return 2
+  second_file="$(mktemp "${TMPDIR:-/tmp}/sane-memory-sync-second.XXXXXX")" || {
+    rm -f "$first_file"
+    return 2
+  }
   if [[ -n "$LOCAL_PEER_HOME" ]]; then
-    first="$(rsync -ani --omit-dir-times --checksum "$local_dir/" "$remote_dir/")" || return 2
-    second="$(rsync -ani --omit-dir-times --checksum "$remote_dir/" "$local_dir/")" || return 2
+    rsync -ani --omit-dir-times --checksum "$local_dir/" "$remote_dir/" >"$first_file" || result=2
+    [[ "${result:-0}" -eq 0 ]] && \
+      rsync -ani --omit-dir-times --checksum "$remote_dir/" "$local_dir/" >"$second_file" || result=2
   else
-    first="$(rsync -ani --omit-dir-times --checksum -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$local_dir/" "$MINI_HOST:$remote_dir/")" || return 2
-    second="$(rsync -ani --omit-dir-times --checksum -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$MINI_HOST:$remote_dir/" "$local_dir/")" || return 2
+    rsync -ani --omit-dir-times --checksum -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" \
+      "$local_dir/" "$MINI_HOST:$remote_dir/" >"$first_file" || result=2
+    [[ "${result:-0}" -eq 0 ]] && \
+      rsync -ani --omit-dir-times --checksum -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" \
+        "$MINI_HOST:$remote_dir/" "$local_dir/" >"$second_file" || result=2
   fi
-  output="$first$second"
-  [[ -n "${output//[[:space:]]/}" ]]
+  if [[ "${result:-0}" -eq 0 ]]; then
+    if grep -q '[^[:space:]]' "$first_file" || grep -q '[^[:space:]]' "$second_file"; then
+      result=0
+    else
+      result=1
+    fi
+  fi
+  rm -f "$first_file" "$second_file"
+  return "$result"
 }
 
 sync_pair() {

@@ -115,7 +115,7 @@ is_retired_training_file() {
 
 is_retired_unowned_file() {
   case "$(basename "$1")" in
-    mini-daytime-cleanup.sh|mini-license-test.sh|mini-codex-keepalive.sh)
+    mini-daytime-cleanup.sh|mini-license-test.sh|mini-codex-keepalive.sh|mini-nightly-disk.sh|mini-disk-clean.sh)
       return 0 ;;
     *) return 1 ;;
   esac
@@ -139,7 +139,7 @@ echo "Verifying on mini..."
 
 mini_ssh '
 uid=$(id -u)
-for label in com.saneapps.training com.saneapps.training-daily-check com.saneapps.training-challengers com.saneapps.training-weekly com.saneapps.saneai-weekend-training-watchdog com.saneapps.nv-benchmark; do
+for label in com.saneapps.training com.saneapps.training-daily-check com.saneapps.training-challengers com.saneapps.training-weekly com.saneapps.saneai-weekend-training-watchdog com.saneapps.nv-benchmark com.saneapps.disk-clean; do
   launchctl disable "gui/$uid/$label" 2>/dev/null || true
   launchctl bootout "gui/$uid/$label" 2>/dev/null || true
   plist="$HOME/Library/LaunchAgents/$label.plist"
@@ -152,8 +152,8 @@ launchctl disable "gui/$uid/com.saneapps.codex-keepalive" 2>/dev/null || true
 launchctl bootout "gui/$uid/com.saneapps.codex-keepalive" 2>/dev/null || true
 keepalive_plist="$HOME/Library/LaunchAgents/com.saneapps.codex-keepalive.plist"
 [ ! -e "$keepalive_plist" ] || /usr/bin/trash "$keepalive_plist"
-for name in mini-daytime-cleanup.sh mini-license-test.sh mini-codex-keepalive.sh; do
-  for base in "$HOME/SaneApps/infra/SaneProcess/scripts/mini" "$HOME/SaneApps/infra/scripts"; do
+for name in mini-daytime-cleanup.sh mini-license-test.sh mini-codex-keepalive.sh mini-nightly-disk.sh mini-disk-clean.sh; do
+  for base in "$HOME/SaneApps/infra/SaneProcess/scripts/mini" "$HOME/SaneApps/infra/scripts" "$HOME/.sanemaster/tools"; do
     retired_path="$base/$name"
     [ ! -e "$retired_path" ] || /usr/bin/trash "$retired_path"
   done
@@ -163,7 +163,7 @@ done
 # Syntax check all deployed scripts
 mini_ssh "
 for f in $REMOTE_PRIMARY_DIR/mini-*.sh; do
-  case \"\$(basename \"\$f\")\" in mini-install-training-agents.sh|mini-train-all.sh|mini-train-challengers.sh|mini-train.sh|mini-training-mode.sh|mini-daytime-cleanup.sh|mini-license-test.sh|mini-codex-keepalive.sh) continue ;; esac
+  case \"\$(basename \"\$f\")\" in mini-install-training-agents.sh|mini-train-all.sh|mini-train-challengers.sh|mini-train.sh|mini-training-mode.sh|mini-daytime-cleanup.sh|mini-license-test.sh|mini-codex-keepalive.sh|mini-nightly-disk.sh|mini-disk-clean.sh) continue ;; esac
   /bin/bash -n \"\$f\" && echo \"  OK: \$(basename \$f)\" || echo \"  FAIL: \$(basename \$f)\"
 done
 "
@@ -201,6 +201,7 @@ echo "Refreshing launch agents on mini..."
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh ]; then NIGHTLY_HOUR=8 NIGHTLY_MINUTE=45 SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh; fi"
 echo "Training agents are retired and are never installed by deploy.sh."
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh ]; then bash $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh; fi"
+mini_ssh "if [ -f \$HOME/SaneApps/infra/SaneProcess/scripts/hooks/session-guardian.sh ]; then bash \$HOME/SaneApps/infra/SaneProcess/scripts/hooks/session-guardian.sh --install; fi"
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-weekly-restart.sh ]; then bash $REMOTE_PRIMARY_DIR/mini-install-weekly-restart.sh; fi"
 configure_local_login_keychain
 

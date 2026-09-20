@@ -27,7 +27,8 @@ cd /tmp/repo && /path/to/SaneProcess/scripts/init.sh --client generic
 
 The following defaults describe the private SaneApps production runner. Public
 adopters should treat this as an example and substitute their own canonical
-runner, host, and release evidence path.
+runner, host, and release evidence path. Framing: Mini-first below is the
+SaneApps-operator contract; the public default is local verification.
 
 Mini-first is mandatory for SaneApps repo inspection, build, test, screenshots,
 runtime verification, release proof, and customer-facing evidence. Local MacBook
@@ -47,7 +48,10 @@ ssh mini 'hostname; whoami'
 The installer writes `~/.ssh/config.d/saneapps-mini.conf`. `mini` and
 `mini-remote` use the first available private route: Bonjour LAN, then
 Tailscale. `mini-lan` keeps the direct `stephans-mac-mini.local` route for LAN
-diagnostics only. Verify both the normal alias and Tailscale state with:
+diagnostics only. MUST: the `mini` host entry keeps its `ProxyCommand`
+(saneapps-mini-proxy: LAN first, then Tailscale `nc`); never replace it with a
+literal `HostName` (a Tailscale IP breaks Air-to-Mini routing). Verify both
+the normal alias and Tailscale state with:
 
 ```bash
 ssh -G mini | grep -E '^(hostname|proxycommand|identityfile) '
@@ -65,7 +69,10 @@ user approves the exact exception.
 Run `hostname` before cross-machine reasoning. On the Mini, work directly in
 the local checkout; do not add a self-SSH hop. From the Air, `ssh mini` is the
 canonical controller route. A local-vs-`ssh mini` comparison performed on the
-Mini sees the same filesystem and proves nothing about Air parity.
+Mini sees the same filesystem and proves nothing about Air parity. Mini shells
+default to macOS bash 3.2 (no array append, no herestrings); Mini scripts must
+use file-based alternatives. Mini script source of truth is
+`SaneProcess/scripts/mini/`, deployed with the deploy script.
 
 GitHub `main` is canonical for committed code. Dirty work is snapshot-only and
 never auto-applied. The Air's conflict-preserving 15-minute file-memory sync is
@@ -134,6 +141,8 @@ ssh mini 'launchctl print gui/$(id -u)/com.saneapps.agentmemory'
 ssh mini '/opt/homebrew/bin/agentmemory status'
 ```
 
+`scripts/hooks/session-guardian.sh` is the 10-minute Air/Mini job for orphan MCP reaping and sustained unexpected CPU. It compares 5-minute load to core count, ignores expected work (builds, signed SaneApps, coding apps, Mini Brave, work-session caffeinate), and notifies only on the Air after two consecutive hits. Mini never kills live work and never pops a local CPU banner. Install with `bash scripts/hooks/session-guardian.sh --install`.
+
 ### Source Custody Receipts
 
 Use the focused custody lane when current source must be preserved without
@@ -185,8 +194,14 @@ and `executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Brows
 The canonical route is `scripts/mini/capture-web-screenshot.sh`; pass
 the exact project Git root with `--source-root`, then `--viewport desktop`
 (1440x1000) or `--viewport 375` (375x900). The receipt binds target HEAD,
-branch, dirty status, and a deterministic source/config manifest across the Air
-and Mini; the wrapper rejects path escape, mismatch, or capture-time drift.
+branch, dirty status, and a deterministic source/config manifest. Mini-local
+capture checks source stability without self-SSH or claiming Air parity;
+Air-to-Mini capture also checks peer parity. The wrapper rejects path escape,
+mismatch, or capture-time drift. Use `--reduced-motion reduce` when inspecting
+the native accessibility state of pages whose existing CSS hides scroll-driven
+animations in full-page captures. Default is `no-preference`; receipts record
+the actual motion setting. Reduced-motion proof does not verify the default
+animated flow. Inspect each saved image before marking its receipt inspected.
 Save screenshots under `outputs/playwright/` or the workflow's existing
 `outputs/<workflow>/visual/` directory.
 
@@ -220,6 +235,9 @@ SaneProcess has one SOP with multiple client adapters.
   in fix mode, even when a repo intentionally has no `Gemfile`.
 - Keep low-level bootstrap/package validators Ruby 2.6-parseable until the
   Homebrew Ruby check has had a chance to run.
+- Do not depend on Ruby `Timeout.timeout` for blocking subprocess IO; it does
+  not fire reliably there. Use process-level control with a join timeout and
+  an explicit kill path.
 
 | Client | Install mode | Stable surface |
 |--------|--------------|----------------|
@@ -353,19 +371,8 @@ Use this routing table for Codex plugin skills:
 
 ## Core Rules
 
-SaneProcess enforces the scientific method for coding agents:
-
-| Rule | Meaning |
-|------|---------|
-| Verify before trying | Read local code and check uncertain APIs/tools before editing |
-| Two failures means stop | Read the error and research the real API before continuing |
-| Green means done | Do not claim completion with failing tests |
-| No test, no rest | Fixes need meaningful tests; tautologies and blind `source.contains` guards do not count — the test must fail for the real bug at runtime |
-| Use house tools | Use SaneMaster and shared wrappers for stateful workflows |
-| Write it down | Bugs, process misses, and durable tool changes go to memory + handoff |
-
-Full behavioral policy lives in `AGENTS.md`; hooks and shared scripts enforce
-the parts that can be automated.
+Behavioral policy lives in the `AGENTS.md` Core Rules table. Enforcement
+mapping lives below under "Golden Rule Hook Coverage".
 
 ## Project Structure
 
@@ -522,6 +529,12 @@ release:
 ruby scripts/SaneMaster.rb upgrade_path_proof
 ruby scripts/SaneMaster.rb release_preflight
 ```
+
+For unsigned macOS unit tests, set release.upgrade_path_test.unsigned_tests to true.
+This forwards the explicit monitor_tests --unsigned option and uses the same
+signing overrides as unit-only verify. Signed tests remain the default; this
+does not provide signed-app, permission, or customer GUI proof.
+
 
 The configured process must drive the customer-observable upgrade behavior and
 write the JSON result and runtime artifact at the paths supplied by

@@ -125,8 +125,14 @@ The Mini never performs a daily shutdown or restart.
 
 - macOS sleep, display sleep, and disk sleep are disabled.
 - Restart after power failure is enabled.
-- `mini-memory-guard.sh` performs daily restart-free hygiene. Its deep cleanup
-  has a 20-minute process-group deadline and never invokes a power command.
+- `mini-memory-guard.sh` performs daily restart-free hygiene. It skips the whole
+  run while build/runtime work or the Codex/ChatGPT coding app is active. Its
+  deep cleanup has a 20-minute process-group deadline and never invokes a power command.
+- Server `machine_cleanup` checks a fresh process inventory before filesystem
+  planning and again before applying the plan; unknown process state also blocks it.
+- The duplicate 02:44 `com.saneapps.disk-clean` job and its untracked
+  `~/.sanemaster/tools/mini-{nightly-disk,disk-clean}.sh` scripts are retired.
+  `deploy.sh` removes those legacy paths; daily hygiene stays in the canonical guard.
 - Routine cleanup preserves Downloads and the user's entire Trash, rejects
   symlinked roots/children, and only trashes allowlisted generated artifacts.
 - A root-owned weekly restart gate runs Sunday at 10:30, 11:30, and 12:30. The
@@ -157,8 +163,9 @@ sudo tail -50 /var/log/sane-mini-weekly-restart.log
 | `mini-prepare-automation-root.sh` | On demand | Refreshes clean build/test automation clones |
 | `mini-install-nightly-agent.sh` | On demand | Installs the nightly build/report agent |
 | `mini-nightly.sh` | 8:45 AM daily | Builds/tests active repos and writes the nightly report |
-| `mini-memory-guard.sh` | 5:40 AM daily | Restart-free hygiene with bounded deep cleanup |
-| `mini-install-memory-guard.sh` | On demand | Installs the daily hygiene LaunchAgent |
+| `mini-memory-guard.sh` | 5:40 AM daily on Mini | Restart-free hygiene with bounded deep cleanup |
+| `session-guardian.sh` | every 10 minutes on Air and Mini | Hook-layer guard — see hooks README Architecture table |
+| `mini-install-memory-guard.sh` | On demand | Mini: `com.saneapps.memory-guard`. Air: `com.saneapps.machine-cleanup` at 5:40 AM |
 | `mini-weekly-restart.sh` | Sunday retry windows | Root guarded weekly restart |
 | `mini-install-weekly-restart.sh` | On demand | Installs the root helper and LaunchDaemon |
 | `bootstrap-build-server.sh` | On demand | Proves headless signing and App Store credentials |

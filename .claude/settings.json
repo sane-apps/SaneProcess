@@ -157,7 +157,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh session_start.rb",
             "timeout": 15
           }
         ]
@@ -168,7 +168,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh saneprompt.rb",
             "timeout": 5
           }
         ]
@@ -188,7 +188,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanetools.rb",
             "timeout": 5
           }
         ]
@@ -209,7 +209,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanetrack.rb",
             "timeout": 5
           }
         ]
@@ -252,7 +252,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb; fi",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanestop.rb",
             "timeout": 5
           }
         ]

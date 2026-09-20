@@ -3,6 +3,7 @@
 > **Complete checklist for launching a new macOS app from scratch to distribution**
 > **SaneApps internal template:** replace SaneApps paths, shared keys, app names, release host choices, and private operational assumptions before reusing outside the SaneApps fleet.
 > Last updated: 2026-01-20 (Migrated to sane-apps org, removed Homebrew, added paid distribution model)
+> Status: STALE — pending revision pass (DMG-era artifacts, retired `SaneMaster.rb release` recipe, pre-lanes distribution model). Use for structure only; current release truth lives in `templates/RELEASE_SOP.md` and distribution lanes in `config/products.yml`.
 
 ---
 
@@ -47,7 +48,7 @@ pkill -f 'claude.*dangerously-skip-permissions'
 ### 0.3 Research Cache Requirement
 
 Every project must keep active research in the existing project research cache
-(`.codex/research.md` by default, or a documented client-specific equivalent)
+(`.claude/research.md` by default, or a documented client-specific equivalent)
 and promote durable decisions into `ARCHITECTURE.md`, `DEVELOPMENT.md`,
 `AGENTS.md`, memory, or AgentMemory. Do not create orphan root-level
 research documents.
@@ -115,9 +116,11 @@ For bootstrap tasks, use subagents with verification:
 
 ## Distribution Model
 
+Distribution lanes (checkout, license gating, release channels) live in `config/products.yml` — read the app's lane there instead of assuming a flat price.
+
 | Channel | What Users Get | Cost |
 |---------|----------------|------|
-| **Website** | Signed, notarized direct download | $5 |
+| **Website** | Signed, notarized direct download (ZIP) | Per-lane price (see `config/products.yml`) |
 | **GitHub** | Transparent source (clone and build yourself) | Free |
 
 **No Homebrew distribution.** No packaged downloads on GitHub releases.
@@ -134,7 +137,7 @@ ProjectName/
 │   ├── .gitignore
 │   ├── settings.json
 │   └── rules/                  # Copy from SaneProcess
-├── .codex/research.md          # Active research cache when Codex owns the workflow
+├── .claude/research.md         # Active research cache
 ├── .github/
 │   ├── FUNDING.yml
 │   ├── workflows/
@@ -300,11 +303,11 @@ packages:
       <pubDate>Mon, 20 Jan 2026 12:00:00 -0500</pubDate>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <enclosure
-        url="https://dist.projectname.com/updates/ProjectName-1.0.0.dmg"
+        url="https://dist.projectname.com/updates/ProjectName-1.0.0.zip"
         sparkle:version="1.0.0"
         sparkle:shortVersionString="1.0.0"
         length="2000000"
-        type="application/x-apple-diskimage"
+        type="application/octet-stream"
         sparkle:edSignature="[SIGNATURE]"/>
     </item>
   </channel>
@@ -365,7 +368,7 @@ Benefits:
 
 ---
 
-## Part 4: DMG & Release Scripts
+## Part 4: ZIP & Release Scripts
 
 ### 4.1 Notarization Preflight (CRITICAL)
 
@@ -413,13 +416,12 @@ release:
   site_host: projectname.com
   r2_bucket: sanebar-downloads  # Shared bucket for ALL SaneApps
   use_sparkle: true
-  dmg:
-    file_icon: Resources/DMGIcon.icns
+  # Shipped artifacts are ZIPs (DMG retired 2026-07-15); see templates/RELEASE_SOP.md for current release keys.
 ```
 
 Run:
 ```bash
-./scripts/SaneMaster.rb release
+bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project "$(pwd)" --full --deploy
 ```
 
 ### 4.3 Full Release (Unified)
@@ -427,52 +429,16 @@ Run:
 Use the same script with `--full` for version bump + tests + GitHub release (metadata only):
 
 ```bash
-./scripts/SaneMaster.rb release --full --version X.Y.Z --notes "Release notes"
+bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project "$(pwd)" --full --version X.Y.Z --notes "Release notes" --deploy
 ```
 
-**DMGs are always hosted on Cloudflare R2 + `dist.*`**. GitHub Releases are metadata only.
+**ZIPs are always hosted on Cloudflare R2 + `dist.*`**. GitHub Releases are metadata only.
 
-### 4.4 DMG Background Generator
+### 4.4 ZIP Artifact (DMG staging retired)
 
-```swift
-#!/usr/bin/env swift
-import AppKit
-
-let width: CGFloat = 660
-let height: CGFloat = 400
-let scale: CGFloat = 2  // Retina
-
-let image = NSImage(size: NSSize(width: width * scale, height: height * scale))
-image.lockFocus()
-
-// Dark background
-NSColor(red: 0.08, green: 0.10, blue: 0.18, alpha: 1.0).setFill()
-NSRect(x: 0, y: 0, width: width * scale, height: height * scale).fill()
-
-// Title
-let title = "ProjectName"
-let titleAttrs: [NSAttributedString.Key: Any] = [
-    .font: NSFont.boldSystemFont(ofSize: 36 * scale),
-    .foregroundColor: NSColor.white
-]
-title.draw(at: NSPoint(x: 200 * scale, y: 300 * scale), withAttributes: titleAttrs)
-
-// Subtitle
-let subtitle = "Drag to Applications to install"
-let subAttrs: [NSAttributedString.Key: Any] = [
-    .font: NSFont.systemFont(ofSize: 14 * scale),
-    .foregroundColor: NSColor.lightGray
-]
-subtitle.draw(at: NSPoint(x: 200 * scale, y: 260 * scale), withAttributes: subAttrs)
-
-image.unlockFocus()
-
-// Save
-let data = image.tiffRepresentation!
-let bitmap = NSBitmapImageRep(data: data)!
-let png = bitmap.representation(using: .png, properties: [:])!
-try! png.write(to: URL(fileURLWithPath: "scripts/dmg-resources/dmg-background.png"))
-```
+DMG staging (background images, `dmg-resources/`) is retired — shipped artifacts
+are signed, notarized ZIPs built by `release.sh --full --deploy`. Do not add DMG
+tooling to new projects.
 
 ---
 
@@ -526,16 +492,18 @@ Sitemap: https://projectname.com/sitemap.xml
 
 ### 6.1 Distribution Model
 
+Per-lane checkout, pricing, and release channels live in `config/products.yml` — read the app's lane there.
+
 | Channel | What Users Get | Cost |
 |---------|----------------|------|
-| **Website** | Built DMG, ready to install | $5 |
+| **Website** | Built ZIP, ready to install | Per-lane price (see `products.yml`) |
 | **GitHub** | Source code (clone & build yourself) | Free |
 
 ### 6.2 Payment Setup (Lemon Squeezy)
 
 - Store: `[appname].lemonsqueezy.com`
-- Standard price: $5 one-time
-- Deliver DMG download link after payment
+- Standard price: per-lane one-time (see `products.yml`)
+- Deliver ZIP download link after payment
 
 ### 6.3 FUNDING.yml
 
@@ -598,7 +566,7 @@ Brief description
 - Change 2
 
 ## Testing
-- [ ] Ran ./scripts/SaneMaster.rb release --skip-notarize
+- [ ] Ran release.sh lane (`--full --deploy`; `--skip-notarize` only with typed override approval)
 - [ ] Tested on macOS
 - [ ] No regressions
 
@@ -677,7 +645,8 @@ alias pn='cd ~/Projects/ProjectName && claude --dangerously-skip-permissions'
 
 - Create `AGENTS.md` in the project root for the shared, client-neutral workflow.
 - Keep `CLAUDE.md` only for Claude-specific overlays.
-- Keep canonical shared skills in `~/.codex/skills`; commit `.agents/skills/`
+- Shared SaneApps skills currently live in `~/.codex/skills` (legacy path).
+  Regular clients are Grok, Grokbot, and Cursor. Commit `.agents/skills/`
   only when the repo needs a checked-in compatibility mirror.
 
 ---
@@ -719,8 +688,8 @@ struct MyTests {
 [ ] xcodegen generate
 [ ] Tests pass
 [ ] Build succeeds
-[ ] DMG created
-[ ] DMG signed
+[ ] ZIP created
+[ ] ZIP signed
 [ ] Notarized
 [ ] Stapled
 [ ] appcast.xml updated (for Sparkle auto-updates)
@@ -728,7 +697,7 @@ struct MyTests {
 [ ] Announce on social media
 ```
 
-**Note:** No GitHub releases with packaged downloads. No Homebrew. Paid users get the signed download from the website.
+**Note:** No GitHub releases with packaged downloads. No Homebrew. Paid lanes get the signed ZIP from the website; the lane in `config/products.yml` is authoritative.
 
 ---
 
@@ -736,16 +705,14 @@ struct MyTests {
 
 | Project | Location | Notes |
 |---------|----------|-------|
-| **SaneBar** | `~/SaneApps/apps/SaneBar` | Full mature setup, menu bar app, canonical SaneProcess release lane |
+| **SaneBar** | `~/SaneApps/apps/SaneBar` | Menu bar app — RETIRED (free + open source, no longer paid or advertised); not a canonical release lane |
 | **SaneClip** | `~/SaneApps/apps/SaneClip` | Clipboard manager, $5 paid |
 | **SaneHosts** | `~/SaneApps/apps/SaneHosts` | Hosts file manager |
 | **SaneProcess** | `~/SaneApps/infra/SaneProcess` | Hook master, templates |
 
 ### Known Issues in Reference Projects
 
-| Project | Issue | Status |
-|---------|-------|--------|
-| **SaneClip** | Missing `SUFeedURL` in Sparkle config - auto-updates broken | **FIX NEEDED** |
+No open reference-project issues. The 2026-01-19 `SUFeedURL` gap was verified fixed (present in `SaneClip/Info.plist` and the `project.yml` direct lane).
 
 > Audit date: 2026-01-19. Run periodic audits to catch config drift.
 
@@ -760,7 +727,7 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
 ```
 
 ### Phase 1: Research & Planning
-1. Update the project research cache with:
+1. Update the project research cache (`.claude/research.md`) with:
    - API research (use apple-docs, context7, github MCPs)
    - State machine diagrams (Mermaid)
    - Architecture decisions
@@ -792,4 +759,4 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
 **Key differences:**
 - Research comes FIRST, not during coding
 - No Homebrew, no packaged downloads on GitHub
-- Transparent source on GitHub, signed direct download costs $5 on website
+- Transparent source on GitHub, signed direct ZIP download per the `config/products.yml` lane

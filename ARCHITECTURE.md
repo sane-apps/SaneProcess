@@ -8,7 +8,7 @@ How the enforcement system works, why decisions were made, and where it's headed
 
 ## 1. System Overview
 
-SaneProcess is agent workflow enforcement built around the scientific method. It has one portable SOP and several adapter layers: a Claude-native hook runtime, a Codex-oriented instruction/config/skill path, and a generic `AGENTS.md` baseline for any repo-aware coding agent. The Claude side uses four Ruby hooks plus one session bootstrap hook to enforce research-before-edit discipline through a 4-category research gate (docs, web, github, local) and to prevent doom loops via a circuit breaker. Shared state lives in a single HMAC-signed JSON file for the Claude hook runtime.
+SaneProcess is agent workflow enforcement built around the scientific method. It has one portable SOP and several adapter layers: a Claude-native hook runtime, a Codex-oriented instruction/config/skill path, and a generic `AGENTS.md` baseline for any repo-aware coding agent. The Claude side uses six hook entry points (SessionStart bootstrap, UserPromptSubmit, PreToolUse, PostToolUse, TaskCompleted, Stop — see the table below) to enforce research-before-edit discipline through the research gate (web + local mandatory, docs conditional, github as configured; ADR-011 is normative) and to prevent doom loops via a circuit breaker. Shared state lives in a single HMAC-signed JSON file for the Claude hook runtime.
 
 Codex note: the stable Codex contract is `AGENTS.md`, canonical skills in `~/.codex/skills`, optional `.agents/skills` mirrors for compatible clients, Codex config, MCP, and shared runtime guardrails such as `check-inbox.sh` send approval plus `sane_curl_guard.sh`. Codex now documents hook support, but SaneProcess treats hooks as an adapter layer rather than the portable enforcement base.
 
@@ -152,17 +152,17 @@ flowchart TD
 
 ### Research Gate
 
-Before any edit (Edit, Write, Bash with mutation) is allowed, 4 research categories must be satisfied:
+Before any edit (Edit, Write, Bash with mutation) is allowed, the research gate must be satisfied: `web` + `local` always, `docs` only when apple-docs is configured (so a down MCP cannot deadlock), `github` as configured. ADR-011 below is normative.
 
 ```mermaid
 flowchart LR
-    EDIT[Edit/Write Request] --> GATE{All 4 done?}
+    EDIT[Edit/Write Request] --> GATE{Gate satisfied?}
 
     GATE -->|No| BLOCKED[EXIT 2: BLOCKED]
     GATE -->|Yes| ALLOWED[EXIT 0: ALLOW]
 
-    subgraph "4 Categories"
-        DOC[docs<br/>apple-docs / context7]
+    subgraph "Categories (ADR-011: web+local mandatory, docs conditional, github as configured)"
+        DOC[docs<br/>apple-docs when configured]
         WEB[web<br/>WebSearch / WebFetch]
         GH[github<br/>mcp__github__*]
         LOC[local<br/>Read / Grep / Glob]
@@ -457,12 +457,9 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 - Trigger maps and AGENTS changes can be regression-tested before they ship.
 - Support, release, UI runtime, tool discovery, subagent hygiene, session lifecycle, and SOP score-cap workflows can be tested as multi-step receipts instead of more prompt prose.
 - Multi-agent delegation remains useful, but workflow complexity should be driven by eval failures and task shape, not by default escalation.
-- Reviewer breadth and execution concurrency are separate controls. Useful
-  perspectives determine review breadth; live client/host capacity determines
-  simultaneous workers. Stateful work uses native subagents, while isolated
-  read-only perspectives may use ephemeral sandboxed `codex exec` fan-out;
-  interactive waves are only a compatibility fallback. The operational source
-  of truth is `DEVELOPMENT.md` under "Reviewer fan-out routing."
+- Reviewer fan-out routing (native subagents vs ephemeral `codex exec` vs waves):
+  `DEVELOPMENT.md` under "Reviewer fan-out routing" is the operational source
+  of truth.
 - Skill descriptions and duplicate-name drift become tested routing surfaces rather than informal prose.
 - Client-managed Codex plugins are runtime adapter surfaces. SaneProcess records category routing in `DEVELOPMENT.md`, but release/support/security proof stays with repo-owned wrappers and eval coverage instead of an exhaustive plugin inventory.
 - Verification scope is a tested workflow surface. `proof_plan` classifies
@@ -542,7 +539,11 @@ Together the three signals triangulate intent from evidence, not the agent's say
 ### ADR-012: Mini maintenance and restart are separate fail-safe lanes (2026-07-14)
 
 The Mac Mini is an always-on build and operations server. Daily hygiene must
-never shut down or restart it. The deep `machine_cleanup` pass is bounded, and
+never shut down or restart it. The daily guard skips all cleanup during active
+build/runtime work or an open Codex/ChatGPT coding client. Server cleanup also
+checks fresh process state before scanning files and before applying a plan;
+unknown state fails closed. The duplicate 02:44 disk-clean job is retired.
+The deep `machine_cleanup` pass is bounded, and
 its timeout/failure is nonfatal so the remaining lightweight hygiene still
 runs. Routine cleanup preserves Downloads and unrelated Trash contents and
 rejects symlinked cleanup roots/children.

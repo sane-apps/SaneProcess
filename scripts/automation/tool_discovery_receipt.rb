@@ -83,9 +83,9 @@ class ToolDiscoveryReceipt
     {
       name: 'Run and verify a live app',
       keywords: %w[launch run smoke runtime end-to-end e2e screenshot visual qa],
-      command: 'ruby scripts/SaneMaster.rb test_mode --release --no-logs',
+      command: 'ruby scripts/SaneMaster.rb test_mode --release',
       source: 'scripts/SaneMaster.rb test_mode',
-      why: 'Canonical kill → build → launch path for real runtime checks.'
+      why: 'Canonical kill → build → live log → launch path. Saves evidence before launch; --quiet-logs keeps the bounded capture without following console output.'
     },
     {
       name: 'Mini screenshot capture',

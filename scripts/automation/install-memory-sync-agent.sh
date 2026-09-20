@@ -51,6 +51,8 @@ cat > "$PLIST" <<PLIST
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <key>Nice</key>
+  <integer>10</integer>
   <key>StartInterval</key>
   <integer>$INTERVAL</integer>
   <key>ThrottleInterval</key>
@@ -120,9 +122,9 @@ fi
 uid="$(id -u)"
 launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
 launchctl bootout "gui/$uid/$TUNNEL_LABEL" 2>/dev/null || true
+launchctl enable "gui/$uid/$LABEL"
+launchctl enable "gui/$uid/$TUNNEL_LABEL"
 launchctl bootstrap "gui/$uid" "$PLIST"
 launchctl bootstrap "gui/$uid" "$TUNNEL_PLIST"
-launchctl enable "gui/$uid/$LABEL" 2>/dev/null || true
-launchctl enable "gui/$uid/$TUNNEL_LABEL" 2>/dev/null || true
 echo "Installed $LABEL (RunAtLoad + every ${INTERVAL}s)"
 echo "Installed $TUNNEL_LABEL (RunAtLoad + KeepAlive foreground tunnel)"

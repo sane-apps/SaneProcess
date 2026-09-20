@@ -143,7 +143,7 @@ exit(run_tests('Mini Deploy Tests') do
     end
 
     test('dangerous unowned Mini scripts are retired and removed on deploy') do
-      retired = %w[mini-daytime-cleanup.sh mini-license-test.sh mini-codex-keepalive.sh]
+      retired = %w[mini-daytime-cleanup.sh mini-license-test.sh mini-codex-keepalive.sh mini-nightly-disk.sh mini-disk-clean.sh]
       deploy = File.read(File.join(__dir__, 'deploy.sh'))
 
       retired.each do |name|
@@ -151,6 +151,8 @@ exit(run_tests('Mini Deploy Tests') do
         assert(deploy.include?(name))
       end
       assert(deploy.include?('is_retired_unowned_file'))
+      assert(deploy.include?('com.saneapps.disk-clean'))
+      assert(deploy.include?('"$HOME/.sanemaster/tools"'))
       assert(deploy.include?('launchctl disable "gui/$uid/com.saneapps.codex-keepalive"'))
       assert(deploy.include?('/usr/bin/trash "$retired_path"'))
       true
