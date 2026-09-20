@@ -307,8 +307,21 @@ module SaneMasterModules
     def run_verify_preflight
       return if @verify_preflight_ran
 
+      ensure_xcodegen_project!
       preflight_test_environment
       @verify_preflight_ran = true
+    end
+
+    def ensure_xcodegen_project!
+      return if project_xcodeproj && File.exist?(project_xcodeproj.to_s)
+      return unless File.exist?('project.yml')
+
+      puts '🔧 No Xcode project found but project.yml exists. Generating with xcodegen...'
+      unless system('xcodegen', 'generate', out: File::NULL, err: File::NULL)
+        puts "❌ xcodegen generate failed. Run 'xcodegen generate' manually."
+        exit 1
+      end
+      puts '✅ Xcode project generated.'
     end
 
     def ensure_sanevideo_test_assets!

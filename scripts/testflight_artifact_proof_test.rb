@@ -15,7 +15,7 @@ class TestflightArtifactFixture
   def initialize
     @root = Dir.mktmpdir('testflight-proof-project-')
     @remote = Dir.mktmpdir('testflight-proof-remote-')
-    git(@remote, 'init', '--bare', '-q')
+    git(@remote, 'init', '--bare', '-q', '-b', 'main')
     git(@root, 'init', '-q', '-b', 'main')
     git(@root, 'config', 'user.email', 'proof@example.test')
     git(@root, 'config', 'user.name', 'Proof Test')
