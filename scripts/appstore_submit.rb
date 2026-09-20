@@ -1877,6 +1877,7 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
   version = find_editable_version(app_id, asc_platform, version_string, token)
   if version
     log_info "Found existing version #{version_string} (#{version.dig('attributes', 'appStoreState')})"
+    converge_version_to_automatic_release(version, token)
     return version['id']
   end
 
@@ -1897,14 +1898,16 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
     end
   end
 
-  # Create new version
+  # Create new version (explicitly automatic-after-approval: never rely on
+  # whatever release type ASC defaults new API versions to).
   log_info "Creating new App Store version #{version_string}..."
   body = {
     data: {
       type: 'appStoreVersions',
       attributes: {
         platform: asc_platform,
-        versionString: version_string
+        versionString: version_string,
+        releaseType: 'AFTER_APPROVAL'
       },
       relationships: {
         app: {
@@ -1933,6 +1936,54 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
     log_error "Failed to create version #{version_string}"
     nil
   end
+end
+
+# Best-effort convergence for a version object fresh from a list response
+# (callers must only pass data just fetched from ASC): PATCHes MANUAL or
+# unknown release types to AFTER_APPROVAL. Never re-fetches; for verified
+# convergence use ensure_automatic_app_store_release instead.
+def converge_version_to_automatic_release(version, token)
+  return true if version.dig('attributes', 'releaseType') == 'AFTER_APPROVAL'
+
+  version_id = version['id']
+  body = {
+    data: {
+      type: 'appStoreVersions',
+      id: version_id,
+      attributes: { releaseType: 'AFTER_APPROVAL' }
+    }
+  }
+  resp = asc_patch("/appStoreVersions/#{version_id}", body: body, token: token)
+  if resp
+    log_info "Set version #{version_id} release type to automatic after approval."
+    true
+  else
+    log_error "Failed to set version #{version_id} release type to automatic after approval."
+    false
+  end
+end
+
+# Verified convergence for a possibly-stale version object: re-reads current
+# state from ASC, PATCHes to AFTER_APPROVAL when needed, and returns true
+# only when ASC confirms the automatic release type. Fails closed.
+def ensure_automatic_app_store_release(version, token)
+  version_id = version['id']
+  fresh = asc_get("/appStoreVersions/#{version_id}", token: token)
+  return false unless fresh
+
+  return true if fresh.dig('data', 'attributes', 'releaseType') == 'AFTER_APPROVAL'
+
+  body = {
+    data: {
+      type: 'appStoreVersions',
+      id: version_id,
+      attributes: { releaseType: 'AFTER_APPROVAL' }
+    }
+  }
+  resp = asc_patch("/appStoreVersions/#{version_id}", body: body, token: token)
+  confirmed = resp&.dig('data', 'attributes', 'releaseType') == 'AFTER_APPROVAL'
+  log_error "ASC did not confirm automatic release for version #{version_id}." unless confirmed
+  confirmed
 end
 
 # ─── Build Attachment ───

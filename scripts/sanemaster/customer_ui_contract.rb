@@ -263,6 +263,7 @@ module SaneMasterModules
           app: app_name,
           manifest_path: nil,
           receipt_path: receipt_path,
+          release_profile: nil,
           issues: ["Missing customer UI action contract (expected one of: #{CUSTOMER_UI_MANIFEST_PATHS.join(', ')})"],
           warnings: warnings
         }
@@ -271,6 +272,26 @@ module SaneMasterModules
       manifest = read_customer_ui_yaml(manifest_path)
       actions = Array(manifest['actions'])
       required_actions = actions.reject { |action| action['release_required'] == false }
+      release_profile = metadata_value(config, 'customer_ui_release_profile')
+      if release_profile && !release_profile.empty?
+        profiles = manifest['release_profiles'] || {}
+        if profiles.key?(release_profile)
+          wanted = Array(profiles[release_profile]).map(&:to_s)
+          action_ids = actions.map { |a| a['id'].to_s }
+          unknown_ids = (wanted - action_ids).sort
+          unless unknown_ids.empty?
+            warnings << "Release profile '#{release_profile}' names unknown actions: #{unknown_ids.join(', ')}"
+          end
+          required_actions = required_actions.select { |action| wanted.include?(action['id'].to_s) }
+        else
+          known = profiles.keys.map(&:to_s).sort
+          warnings << "Unknown customer UI release profile '#{release_profile}' " \
+                      "(manifest defines: #{known.empty? ? 'none' : known.join(', ')}); validating the full ledger"
+          release_profile = nil
+        end
+      else
+        release_profile = nil
+      end
 
       issues << 'Customer UI action contract has no release-required actions' if required_actions.empty?
       issues.concat(customer_ui_manifest_issues(manifest_path, manifest, required_actions))
@@ -288,6 +309,7 @@ module SaneMasterModules
           manifest_sha256: manifest_sha,
           source_fingerprint: source_fingerprint,
           action_count: required_actions.length,
+          release_profile: release_profile,
           issues: issues,
           warnings: warnings
         }
@@ -312,6 +334,7 @@ module SaneMasterModules
         manifest_sha256: manifest_sha,
         source_fingerprint: source_fingerprint,
         action_count: required_actions.length,
+        release_profile: release_profile,
         receipt_generated_at: receipt['generated_at'],
         issues: issues,
         warnings: warnings,
@@ -323,6 +346,7 @@ module SaneMasterModules
         app: app_name,
         manifest_path: manifest_path,
         receipt_path: receipt_path,
+        release_profile: nil,
         issues: ["Customer UI QA contract parse failure: #{e.message}"],
         warnings: warnings,
         strict_visual: strict_visual
@@ -805,8 +829,21 @@ module SaneMasterModules
       end.new(nil)
     end
 
+    def customer_ui_ios_app_project?
+      config = current_saneprocess_config
+      type = metadata_value(config, 'type').to_s.downcase
+      return true if type == 'ios_app'
+
+      appstore = config['appstore'] || config[:appstore] || {}
+      platforms = Array(appstore['platforms'] || appstore[:platforms]).map { |platform| platform.to_s.downcase }
+      platforms.include?('ios') && !platforms.include?('macos')
+    end
+
     def customer_ui_prepare_target_before_sweep(app_name)
       return [] unless customer_ui_visual_precheck_required?
+      # iOS sweeps run in the simulator through the app-specific runner; the
+      # macOS launcher cannot start them, so skip the launch entirely.
+      return [] if customer_ui_ios_app_project?
       if app_name == 'SaneBar'
         return [] if resource_soak_running_app_candidate(app_name)
 

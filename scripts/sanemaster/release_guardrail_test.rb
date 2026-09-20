@@ -6580,8 +6580,8 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(push_helper, 'Refusing to push detached release metadata without a verified reconcile branch.')
       assert_includes(push_helper, 'HEAD:refs/heads/${release_branch}')
       assert(!push_helper.include?('push --force'), 'release metadata must never force-push a branch')
-      assert_operator(release_script.scan('push_project_release_head').length, :>=, 3,
-                      'both version and release metadata syncs must use the guarded push helper')
+      assert(release_script.scan('push_project_release_head').length >= 3,
+             'both version and release metadata syncs must use the guarded push helper')
       true
     end
 

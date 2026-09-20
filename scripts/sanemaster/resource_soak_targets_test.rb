@@ -1,14 +1,41 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'fileutils'
+require 'json'
+require 'rbconfig'
+require 'tmpdir'
+
 require_relative '../hooks/test/test_framework'
-require_relative 'release_guardrail_test_support'
+require_relative 'customer_ui_contract'
+require_relative 'release'
+require_relative 'resource_soak'
+require_relative 'resource_soak_targets'
 
 include TestFramework
-include ReleaseGuardrailTestSupport
 
-ReleaseGuardrailTestSupport.register(__FILE__, 'SaneMaster resource soak targets') do
-  subject = ReleaseGuardrailHarness.new
+def with_env(overrides)
+  previous = {}
+  overrides.each_key { |key| previous[key] = ENV.key?(key) ? ENV[key] : :__missing__ }
+  overrides.each do |key, value|
+    value.nil? ? ENV.delete(key) : ENV[key] = value
+  end
+  yield
+ensure
+  previous.each do |key, value|
+    value == :__missing__ ? ENV.delete(key) : ENV[key] = value
+  end
+end
+
+class ResourceSoakTargetsHarness
+  include SaneMasterModules::CustomerUIContract
+  include SaneMasterModules::Release
+  include SaneMasterModules::ResourceSoak
+  include SaneMasterModules::ResourceSoakTargets
+end
+
+exit(run_tests('SaneMaster resource soak targets') do
+  subject = ResourceSoakTargetsHarness.new
 
   test_category('Resource soak target ownership') do
     test('command-tree parser preserves argv after the separator without a shell') do
@@ -264,6 +291,4 @@ ReleaseGuardrailTestSupport.register(__FILE__, 'SaneMaster resource soak targets
       true
     end
   end
-end
-
-exit(ReleaseGuardrailTestSupport.run_file(__FILE__)) if __FILE__ == $PROGRAM_NAME
+end)

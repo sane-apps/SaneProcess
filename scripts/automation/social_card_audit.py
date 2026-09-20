@@ -201,7 +201,10 @@ def html_files(site: Site) -> list[Path]:
 
 
 def _is_allowed_og_image_name(name: str) -> bool:
-    if name in {"og-image.png", "bundle-og-image.png"}:
+    # social-card.png is SaneScan's long-standing declared card (see
+    # DEFAULT_SITES); renaming a public asset URL would break embeds already
+    # shared, so the allowlist accepts it alongside the og-image convention.
+    if name in {"og-image.png", "bundle-og-image.png", "social-card.png"}:
         return True
     if name.startswith("og-image-") and name.endswith(".png"):
         stamp = name[len("og-image-"):-len(".png")]

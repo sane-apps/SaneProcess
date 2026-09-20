@@ -35,6 +35,14 @@ def cws_receipt
   }
 end
 
+def without_cws_env
+  saved = {}
+  SaneCwsReviewWatch::ENV_NAMES.each { |name| saved[name] = ENV.delete(name) }
+  yield
+ensure
+  saved.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+end
+
 def cws_payload(state:, version: '1.0.9')
   {
     'itemId' => SaneCwsReviewWatch::DEFAULT_ITEM_ID,
@@ -237,11 +245,11 @@ exit(run_tests('CWS Review Watch Tests') do
   test('local health is redacted and never creates state or sends an alert') do
     Dir.mktmpdir('cws-health') do |dir|
       state = File.join(dir, 'state.json')
-      env = {
+      env = SaneCwsReviewWatch::ENV_NAMES.to_h { |name| [name, ''] }.merge(
         'HOME' => dir,
         'SANE_CWS_PUBLISHER_ID' => 'publisher-1',
         'SANE_CWS_ACCESS_TOKEN' => 'access-token-fixture'
-      }
+      )
       receipt = File.join(dir, 'receipt.json')
       stdout, stderr, status = Open3.capture3(
         env, RbConfig.ruby, File.expand_path('cws_review_watch.rb', __dir__),
@@ -340,6 +348,7 @@ exit(run_tests('CWS Review Watch Tests') do
   end
 
   test('uses only official v2 fetchStatus and normalizes the submitted revision') do
+    without_cws_env do
     calls = []
     requester = lambda do |**args|
       calls << args
@@ -361,6 +370,7 @@ exit(run_tests('CWS Review Watch Tests') do
     assert_eq(entity['version'], '1.0.9')
     assert_eq(entity['platform'], 'CHROME_WEB_STORE')
     true
+    end
   end
 
   test('refreshes canonical desktop OAuth with client secret and then performs GET-only status') do
@@ -431,6 +441,7 @@ exit(run_tests('CWS Review Watch Tests') do
   end
 
   test('fails closed with redacted HTTP diagnostics') do
+    without_cws_env do
     requester = lambda do |**_args|
       { code: 403, body: JSON.generate(error: { message: 'secret-bearing-provider-detail' }) }
     end
@@ -446,9 +457,11 @@ exit(run_tests('CWS Review Watch Tests') do
       assert(!e.message.include?('secret-bearing-provider-detail'))
     end
     true
+    end
   end
 
   test('fetchStatus malformed JSON diagnostic never includes the provider body') do
+    without_cws_env do
     provider_body = 'fetch-status-secret-body{not-json'
     client = SaneCwsReviewWatch::Client.new(
       publisher_id: 'publisher-1',
@@ -466,6 +479,7 @@ exit(run_tests('CWS Review Watch Tests') do
       assert(!e.full_message.include?(provider_body))
     end
     true
+    end
   end
 
   test('OAuth refresh malformed JSON diagnostic never includes the provider body') do

@@ -8,7 +8,7 @@ require 'open3'
 
 HOOK = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/sane_catastrophic_guard.rb')
 
-payload = $stdin.read.to_s
+payload = $stdin.read.to_s.force_encoding(Encoding::UTF_8)
 _out, err, status = Open3.capture3('ruby', HOOK, stdin_data: payload)
 if status.exitstatus == 2
   puts({

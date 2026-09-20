@@ -45,20 +45,22 @@ end
 exit(run_tests('Customer UI evidence integrity') do
   harness = EvidenceIntegrityHarness.new
   test_category('Executor coverage') do
-    %w[SaneClick SaneHosts].each do |app|
-      test("#{app} incomplete executor stops before GUI setup or passed receipts") do
+    # SaneHosts self-declares incomplete coverage; SaneClick has a full Mini
+    # execution lane and must refuse off-box runs at the Mini gate instead.
+    { 'SaneClick' => 'Off-box Mini gate refused', 'SaneHosts' => 'Incomplete workflow coverage' }.each do |app, expected|
+      test("#{app} executor stops before passed receipts when run off-box") do
         executor = File.expand_path("../../../../apps/#{app}/scripts/customer_ui_action_executor.rb", __dir__)
         require executor
         subject = Object.const_get("#{app}UIActionExecutor").allocate
         subject.instance_variable_set(:@execute, true)
-        subject.define_singleton_method(:require_mini!) { raise 'Unexpected GUI setup reached' }
+        subject.define_singleton_method(:require_mini!) { raise 'Off-box Mini gate refused' }
         message = begin
           subject.run
           'Unexpected successful execution'
         rescue StandardError => e
           e.message
         end
-        assert_includes(message, 'Incomplete workflow coverage')
+        assert_includes(message, expected)
         true
       end
     end
@@ -149,7 +151,7 @@ exit(run_tests('Customer UI evidence integrity') do
     end
   end
   test_category('Video producer') do
-    test('source sweep exits incomplete and preserves existing runtime receipts') do
+    test('source-only sweep run fails closed and preserves existing runtime receipts') do
       Dir.mktmpdir('video-source-only-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'scripts'))
         FileUtils.cp(VIDEO_SWEEP, File.join(dir, 'scripts/customer_ui_action_sweep.rb'))
@@ -165,13 +167,10 @@ exit(run_tests('Customer UI evidence integrity') do
         end
         output, status = Open3.capture2e(RbConfig.ruby, File.join(dir, 'scripts/customer_ui_action_sweep.rb'))
         assert(!status.success?, output)
-        assert(output.include?('No UI actions were executed'), output)
-        assert_eq(Dir.glob(File.join(dir, '**/mini-click.json')), [])
-        proofs = Dir.glob(File.join(dir, 'outputs/customer-ui/source-test-proof-*.json'))
-        assert_eq(proofs.length, 1)
-        proof = JSON.parse(File.read(proofs.first))
-        assert_eq(proof['proof_type'], 'source_guard')
-        assert(!proof.key?('status'))
+        assert(output.include?('Customer UI action sweep failed'), output)
+        assert(!output.include?('execution receipt accepted'), output)
+        failures = Dir.glob(File.join(dir, 'outputs/customer-ui/customer-ui-action-sweep-failed-*.txt'))
+        assert_eq(failures.length, 1)
         ['.sane/customer_ui_action_receipt.json', 'outputs/customer_ui_action_receipt.json'].each do |path|
           assert_eq(File.read(File.join(dir, path)), 'existing real receipt')
         end
