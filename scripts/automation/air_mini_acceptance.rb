@@ -397,12 +397,26 @@ module SaneAppsAirMiniAcceptance
     def private_route_check
       config = File.join(@home, '.ssh/config.d/saneapps-mini.conf')
       proxy = File.join(@home, '.local/bin/saneapps-mini-proxy')
-      execute('air-private-routes', 'SSH ladder excludes public tunnels', 'air',
-              ['/usr/bin/grep', '-EHi', 'trycloudflare|cloudflared', config, proxy], timeout: 10) do |_text|
+      cf_proxy = File.join(@home, '.local/bin/saneapps-mini-cf-proxy')
+      execute('air-private-routes', 'Auto ladder excludes public tunnels', 'air',
+              ['/usr/bin/grep', '-EHi', 'trycloudflare|cloudflared', proxy], timeout: 10) do |_text|
         false
       end.tap do |result|
         result[:passed] = result[:exitstatus] == 1 unless result[:planned]
-        result[:evidence] = 'No Cloudflare tunnel references' if result[:passed]
+        result[:evidence] = 'Auto ladder has no Cloudflare references' if result[:passed]
+      end
+      execute('air-rescue-alias', 'Rescue alias is explicit and named (no quick tunnel)', 'air',
+              ['/usr/bin/grep', '-EHi', 'trycloudflare', config, cf_proxy], timeout: 10) do |_text|
+        false
+      end.tap do |result|
+        unless result[:planned]
+          config_text = File.exist?(config) ? File.read(config) : ''
+          result[:passed] = result[:exitstatus] == 1 &&
+                            File.exist?(cf_proxy) &&
+                            config_text.include?('Host mini-cf') &&
+                            config_text.include?('ProxyCommand ~/.local/bin/saneapps-mini-proxy')
+        end
+        result[:evidence] = 'No trycloudflare refs; mini-cf alias present; ladder intact' if result[:passed]
       end
     end
 

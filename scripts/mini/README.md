@@ -54,6 +54,63 @@ Use `ssh mini-lan` only to diagnose same-network Bonjour. If LAN is unavailable,
 `ssh mini` automatically uses Tailscale. If both private routes fail, the proxy
 fails clearly rather than hiding the outage behind an ephemeral hostname.
 
+## Cloudflare Rescue Path (mini-cf)
+
+When LAN and Tailscale are both down, `ssh mini` fails loudly by design and
+the recovery path is the explicit `mini-cf` alias: a named Cloudflare tunnel
+(`saneapps-mini`, outbound-only from the Mini) fronted by a Cloudflare Access
+app on `mini-ssh.saneapps.com`. It is never part of the auto ladder — normal
+traffic and automation stay on the private routes, and Quick Tunnels stay
+banned (acceptance fails on any `trycloudflare` reference).
+
+Components:
+
+- Mini connector: `com.saneapps.cf-tunnel` LaunchAgent running
+  `mini-cf-tunnel-run.sh` with `SANE_CF_TUNNEL_TOKEN` (Mini `~/.config/nv/env`).
+- Access app `Mini SSH rescue` with two policies: `Owner login` (decision
+  `allow`, owner email only) and `Rescue service token` (decision
+  `non_identity`, the `mini-ssh-rescue` service token). Service tokens never
+  authenticate under an `allow` decision — they need their own `non_identity`
+  policy (verified 2026-09-20). No other identities: SSH into the build
+  server is not grouped with looser app policies.
+- Air alias: `Host mini-cf` in `~/.ssh/config.d/saneapps-mini.conf` via
+  `~/.local/bin/saneapps-mini-cf-proxy`, which reads `CF_MINI_SSH_CLIENT_ID`
+  and `CF_MINI_SSH_CLIENT_SECRET` (Air `~/.config/nv/env`) and passes them to
+  cloudflared through environment variables, never argv.
+
+Install or repair:
+
+```bash
+# Air side (additive; never rewrites the ladder config)
+bash scripts/mini/install-mini-cf-ssh.sh
+
+# Mini side (after deploy.sh ships the scripts)
+ssh mini 'bash ~/SaneApps/infra/SaneProcess/scripts/mini/mini-install-cf-tunnel.sh'
+```
+
+Probe on demand (bounded, writes a receipt under `~/SaneApps/outputs/mini-cf-probe/`):
+
+```bash
+bash scripts/automation/probe-mini-cf.sh
+ssh mini-cf 'hostname; whoami'
+```
+
+Rotation (so the next one is seamless):
+
+- Service token (`mini-ssh-rescue`, read by the Air proxy): 1-year life,
+  current one expires 2027-09-21. Mint a short-lived dashboard token with
+  Account / Access: Apps and Policies / Edit, export it as
+  `CLOUDFLARE_SETUP_TOKEN`, then run
+  `bash scripts/automation/rotate-mini-cf-service-token.sh` — it creates the
+  successor, repoints the policy, proves HTTP 200 at the edge, deletes the
+  predecessor, and SOP-saves the new pair. Delete the setup token in the
+  dashboard afterward (it cannot delete itself) and purge it from env/keychain.
+- Tunnel token (`SANE_CF_TUNNEL_TOKEN` on Mini): no expiry. If it ever leaks,
+  delete the tunnel in the Zero Trust dashboard and rerun the setup; there is
+  no in-place rotation.
+- Setup tokens never appear in runtime code or configs — only in env/keychain
+  during the operation that needs them.
+
 ## Mini To Air Access
 
 The return route is intentionally available for recovery and bidirectional
@@ -158,6 +215,8 @@ sudo tail -50 /var/log/sane-mini-weekly-restart.log
 |---|---:|---|
 | `install-mini-ssh-config.sh` | On demand on Air | Installs LAN to Tailscale `ssh mini` routing |
 | `install-air-return-ssh.sh` | On demand on Mini | Installs dedicated Tailscale `ssh air` return routing |
+| `install-mini-cf-ssh.sh` | On demand on Air | Installs the explicit `mini-cf` rescue alias |
+| `mini-install-cf-tunnel.sh` | On demand on Mini | Installs the rescue tunnel connector |
 | `saneapps-mini-proxy.sh` | Every `ssh mini` | Chooses LAN, then Tailscale |
 | `mini-install-agentmemory.sh` | On demand on Mini | Installs restart-durable shared memory worker |
 | `mini-prepare-automation-root.sh` | On demand | Refreshes clean build/test automation clones |
@@ -256,6 +315,7 @@ Terminal-host automation is focus-neutral:
 ~/Library/LaunchAgents/com.saneapps.nightly.plist
 ~/Library/LaunchAgents/com.saneapps.memory-guard.plist
 ~/Library/LaunchAgents/com.saneapps.agentmemory.plist
+~/Library/LaunchAgents/com.saneapps.cf-tunnel.plist
 /Library/LaunchDaemons/homebrew.mxcl.tailscale.plist
 /Library/LaunchDaemons/com.saneapps.weekly-restart.plist
 ```
